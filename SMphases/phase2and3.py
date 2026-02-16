@@ -70,16 +70,20 @@ def run_classical(ser, shared, perf_gui, sensor_gui, max_trials=60,
         rewarded = False
         t0 = time.time()
 
-        while (time.time() - t0) < LED_ON_TIME:
+        deadline = t0 + LED_ON_TIME
+
+        while time.time() < deadline:
             if STOP_EVENT.is_set():
                 break
             snap = shared.get()
             perf_gui.update(results_df, port)
             sensor_gui.update(snap)
             st, _ = shared.get_port(port)
-            if st == "triggered" and held_triggered(shared, port, SENSOR_HOLD_TIME):
-                rewarded = True
-                break
+            if st == "triggered":
+                if time.time() < deadline and held_triggered(shared, port, SENSOR_HOLD_TIME):
+                    if time.time() < deadline:
+                        rewarded = True
+                        break
             time.sleep(0.01)
 
         set_led(ser, port, False)
