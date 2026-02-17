@@ -27,7 +27,7 @@ def pick_port(last_port, same_port_count):
 
 def run_phase1(ser, shared: SharedSensorState, perf_gui: PerformanceGUI, sensor_gui: SensorGUI,
                save_dir: str, animal_name: str):
-    results_df = pd.DataFrame(columns=["trial_num", "port", "trial_start", "trial_end", "rt", "iti"])
+    results_df = pd.DataFrame(columns=["trial_num", "port", "trial_start", "trial_end", "rt", "iti", "reward_triggered"])
     trial_counter = 0
     last_port = None
     same_port_count = 0
@@ -77,7 +77,8 @@ def run_phase1(ser, shared: SharedSensorState, perf_gui: PerformanceGUI, sensor_
             "trial_start": trial_start,
             "trial_end": trial_end,
             "rt": rt,
-            "iti": iti
+            "iti": iti,
+            "reward_triggered": rewarded,
         }
 
         # Update GUI

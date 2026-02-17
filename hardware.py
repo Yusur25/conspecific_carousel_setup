@@ -15,6 +15,21 @@ COMMANDS = {
     "B": {"led_on": 0x25, "led_off": 0x26, "valve_on": 0x27, "valve_off": 0x28},
 }
 
+TABLE_TURN_CCW_45 = 0x08  # 45 degrees counter-clockwise
+TABLE_TURN_CW_45  = 0x09  # 45 degrees clockwise
+
+DEFAULT_TABLE_POSITION = 0
+# Position definitions (in 45° steps from default)
+TABLE_POSITIONS = {
+    0: 0,   # default / home
+    1: 2,   # 90° CW
+    2: 4,   # 180° CW
+    3: 6,   # 270° CW
+    4: -2,  # 90° CCW
+}
+
+current_table_position = DEFAULT_TABLE_POSITION
+
 STOP_EVENT = threading.Event()
 # ---------------------------
 # Thread-safe sensor state
@@ -121,3 +136,34 @@ def shutdown_outputs(ser):
     for p in ("A", "B"):
         ser.write(bytes([COMMANDS[p]["led_off"], COMMANDS[p]["valve_off"]]))
     ser.flush()
+
+def turn_table(ser, steps: int):
+    """
+    Turn the table a given number of 45° steps.
+    Positive = CW, Negative = CCW
+    """
+    if steps == 0:
+        return
+
+    cmd = TABLE_TURN_CW_45 if steps > 0 else TABLE_TURN_CCW_45
+    for _ in range(abs(steps)):
+        ser.write(bytes([cmd]))
+        ser.flush()
+        time.sleep(0.1)  # small delay for motor safety
+
+def move_table_to_position(ser, target_position: int):
+    global current_table_position
+
+    if target_position not in TABLE_POSITIONS:
+        raise ValueError(f"Unknown table position {target_position}")
+
+    current_steps = TABLE_POSITIONS[current_table_position]
+    target_steps = TABLE_POSITIONS[target_position]
+
+    delta = target_steps - current_steps
+    turn_table(ser, delta)
+
+    current_table_position = target_position
+
+def reset_table_to_default(ser):
+    move_table_to_position(ser, DEFAULT_TABLE_POSITION)

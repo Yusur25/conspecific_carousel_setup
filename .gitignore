@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 venv/
 
+.idea/
+
 # Data outputs
 data/
 *.csv

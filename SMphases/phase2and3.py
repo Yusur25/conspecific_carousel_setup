@@ -2,15 +2,15 @@
 #animal has to poke when led comes on to get reward. Animal has to hold poke for 0.1 seconds to get reward.
 #phase 2: led ON for 10seconds
 #phase 3: led ON for 5 seconds
-#CHANGE PARAMETERS IN THIS FILE TO CHANGE PHASE 2 AND 3
+
 
 import random
 import time
+import threading
 import pandas as pd
 from datetime import datetime
-from hardware import set_led, deliver_reward, shutdown_outputs, SharedSensorState, STOP_EVENT
+from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT
 
-LED_ON_TIME = 10 #change to 5 for phase 3
 SENSOR_HOLD_TIME = 0.1
 ITI_MIN = 3.0
 ITI_MAX = 6.0
@@ -46,99 +46,124 @@ def held_triggered(shared: SharedSensorState, port: str, hold_time: float) -> bo
         time.sleep(0.005)
     return True
 
-def run_classical(ser, shared, perf_gui, sensor_gui, max_trials=60,
-                  save_trial_path=None, save_sensor_path=None):
-    results_df = pd.DataFrame(columns=["trial_num","port","forced_port","reward_triggered","trial_start","trial_end","rt","iti"])
-    # anti-camping + presentation history
-    presentation_history = []
-    history = {"A": [], "B": []}
-    forced_port = None
 
-    for trial_num in range(1, max_trials+1):
-        if STOP_EVENT.is_set():
-            print("[INFO] STOP detected, exiting classical conditioning phase.")
-            break
+class ClassicalConditioning:
+    def __init__(self, ser, shared, perf_gui, sensor_gui, led_on_time):
+        self.LED_ON_TIME = led_on_time
+        self.ser = ser
+        self.shared = shared
+        self.perf_gui = perf_gui
+        self.sensor_gui = sensor_gui
 
-        #choose port
-        port, was_forced = pick_port(presentation_history, forced_port)
-        presentation_history.append(port)
-        if len(presentation_history) > 3: presentation_history.pop(0)
+        self.running = False
+        self.thread = None
 
-        # Run trial
-        trial_start = datetime.now()
-        set_led(ser, port, True)
-        rewarded = False
-        t0 = time.time()
+        # Data + state
+        self.results_df = pd.DataFrame(columns=[
+            "trial_num","port","forced_port","reward_triggered",
+            "trial_start","trial_end","rt","iti"
+        ])
 
-        deadline = t0 + LED_ON_TIME
+        self.presentation_history = []
+        self.history = {"A": [], "B": []}
+        self.forced_port = None
+        self.trial_num = 0
 
-        while time.time() < deadline:
-            if STOP_EVENT.is_set():
-                break
-            snap = shared.get()
-            perf_gui.update(results_df, port)
-            sensor_gui.update(snap)
-            st, _ = shared.get_port(port)
-            if st == "triggered":
-                if time.time() < deadline and held_triggered(shared, port, SENSOR_HOLD_TIME):
-                    if time.time() < deadline:
-                        rewarded = True
-                        break
-            time.sleep(0.01)
+    # --------------------
+    # Control methods
+    # --------------------
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
 
-        set_led(ser, port, False)
-        trial_end = datetime.now()
-        if rewarded: deliver_reward(ser, port)
-        rt = (trial_end - trial_start).total_seconds() if rewarded else LED_ON_TIME
-        iti = random.uniform(ITI_MIN, ITI_MAX)
+    def stop(self):
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=1)
 
-        results_df.loc[len(results_df)] = {
-            "trial_num": trial_num,
-            "port": port,
-            "forced_port": was_forced,
-            "reward_triggered": rewarded,
-            "trial_start": trial_start,
-            "trial_end": trial_end,
-            "rt": rt,
-            "iti": iti,
-        }
+    # --------------------
+    # Main conditioning loop
+    # --------------------
+    def _run(self):
+        while self.running and not STOP_EVENT.is_set():
+            self.trial_num += 1
 
-        #update reward history
-        history[port].append(rewarded)
-        if len(history[port]) > 3:
-            history[port].pop(0)
+            # choose port
+            port, was_forced = pick_port(
+                self.presentation_history,
+                self.forced_port
+            )
 
-        # anti-camping rule
-        if len(history["A"]) == 3 and len(history["B"]) == 3:
+            self.presentation_history.append(port)
+            if len(self.presentation_history) > 3:
+                self.presentation_history.pop(0)
 
-            if all(x is False for x in history["A"]) and all(x is True for x in history["B"]):
-                forced_port = "A"
-                print("[ANTI-CAMPING] Forcing Port A (missed 3, other rewarded 3)")
+            # run trial
+            trial_start = datetime.now()
+            set_led(self.ser, port, True)
+            rewarded = False
+            deadline = time.time() + self.LED_ON_TIME
 
-            elif all(x is False for x in history["B"]) and all(x is True for x in history["A"]):
-                forced_port = "B"
-                print("[ANTI-CAMPING] Forcing Port B (missed 3, other rewarded 3)")
+            while time.time() < deadline:
+                if not self.running or STOP_EVENT.is_set():
+                    break
 
-        #release forced port on success
 
-        if rewarded and forced_port == port:
-            print("[ANTI-CAMPING] Forced port rewarded — returning to normal selection")
-            forced_port = None
-            history = {"A": [], "B": []}
+                st, _ = self.shared.get_port(port)
+                if st == "triggered" and held_triggered(
+                    self.shared, port, SENSOR_HOLD_TIME
+                ):
+                    rewarded = True
+                    break
 
-        #ITI
-        sleep_start = time.time()
-        while (time.time() - sleep_start) < iti:
-            if STOP_EVENT.is_set():
-                break
-            snap = shared.get()
-            perf_gui.update(results_df, port)
-            sensor_gui.update(snap)
-            time.sleep(0.05)
+                time.sleep(0.01)
 
-        # at the end, save files if paths are provided
-        if save_trial_path is not None:
-            results_df.to_csv(save_trial_path, index=False)
-            print(f"[INFO] Trials saved: {save_trial_path}")
+            set_led(self.ser, port, False)
+            trial_end = datetime.now()
 
-    return results_df
+            if rewarded:
+                deliver_reward(self.ser, port)
+
+            rt = (
+                (trial_end - trial_start).total_seconds()
+                if rewarded else self.LED_ON_TIME
+            )
+
+            iti = random.uniform(ITI_MIN, ITI_MAX)
+
+            self.results_df.loc[len(self.results_df)] = {
+                "trial_num": self.trial_num,
+                "port": port,
+                "forced_port": was_forced,
+                "reward_triggered": rewarded,
+                "trial_start": trial_start,
+                "trial_end": trial_end,
+                "rt": rt,
+                "iti": iti,
+            }
+
+            # update reward history
+            self.history[port].append(rewarded)
+            if len(self.history[port]) > 3:
+                self.history[port].pop(0)
+
+            # anti-camping
+            if len(self.history["A"]) == 3 and len(self.history["B"]) == 3:
+                if all(x is False for x in self.history["A"]) and all(x is True for x in self.history["B"]):
+                    self.forced_port = "A"
+                elif all(x is False for x in self.history["B"]) and all(x is True for x in self.history["A"]):
+                    self.forced_port = "B"
+
+            if rewarded and self.forced_port == port:
+                self.forced_port = None
+                self.history = {"A": [], "B": []}
+
+            # ITI
+            iti_start = time.time()
+            while time.time() - iti_start < iti:
+                if not self.running or STOP_EVENT.is_set():
+                    return
+                time.sleep(0.05)
