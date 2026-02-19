@@ -12,8 +12,8 @@ from datetime import datetime
 from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT
 
 SENSOR_HOLD_TIME = 0.1
-ITI_MIN = 3.0
-ITI_MAX = 6.0
+ITI_MIN = 5.0
+ITI_MAX = 10.0
 
 
 def pick_port(presentation_history, forced_port):

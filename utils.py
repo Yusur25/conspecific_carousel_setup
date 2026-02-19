@@ -7,12 +7,16 @@ def now(): return datetime.now()
 
 def parse_beambreak(msg: str) -> Tuple[Optional[str], Optional[str]]:
     msg_l = msg.lower()
-    if "beambreak" not in msg_l: return None, None
+    if not any(k in msg_l for k in ("beambreak", "sensor")):
+        return None, None
     if "triggered" in msg_l: state = "triggered"
     elif "cleared" in msg_l: state = "cleared"
     else: return None, None
     if "port a" in msg_l: return "A", state
     if "port b" in msg_l: return "B", state
+    if "port c" in msg_l: return "C", state
+    if "door" in msg_l: return "door", state
+    if "table" in msg_l: return "table", state
     return None, None
 
 def safe_filename(base: str, ext: str) -> str:
