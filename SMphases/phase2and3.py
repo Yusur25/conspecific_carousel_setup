@@ -9,9 +9,8 @@ import time
 import threading
 import pandas as pd
 from datetime import datetime
-from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT
+from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT, sensor_held
 
-SENSOR_HOLD_TIME = 0.1
 ITI_MIN = 5.0
 ITI_MAX = 10.0
 
@@ -33,18 +32,6 @@ def pick_port(presentation_history, forced_port):
         return ("B" if last == "A" else "A"), True
 
     return random.choice(["A", "B"]), False
-
-
-def held_triggered(shared: SharedSensorState, port: str, hold_time: float) -> bool:
-    start = time.time()
-    while time.time() - start < hold_time:
-        if STOP_EVENT.is_set():
-            return False
-        st, _ = shared.get_port(port)
-        if st != "triggered":
-            return False
-        time.sleep(0.005)
-    return True
 
 
 class ClassicalConditioning:
@@ -111,10 +98,9 @@ class ClassicalConditioning:
                 if not self.running or STOP_EVENT.is_set():
                     break
 
-
                 st, _ = self.shared.get_port(port)
-                if st == "triggered" and held_triggered(
-                    self.shared, port, SENSOR_HOLD_TIME
+                if st == "triggered" and sensor_held(
+                    self.shared, port
                 ):
                     rewarded = True
                     break

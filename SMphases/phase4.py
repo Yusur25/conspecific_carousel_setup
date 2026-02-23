@@ -21,7 +21,7 @@ from hardware import (
     """
 
 class Phase4Experiment:
-    def __init__(self, ser, shared: SharedSensorState, perf_gui, sensor_gui, led_on_time=5):
+    def __init__(self, ser, shared: SharedSensorState, perf_gui, sensor_gui, led_on_time):
         self.ser = ser
         self.shared = shared
         self.perf_gui = perf_gui

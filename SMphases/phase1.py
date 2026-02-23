@@ -13,6 +13,8 @@ COMMANDS = {
     "B": {"led_on": 0x25, "led_off": 0x26, "valve_on": 0x27, "valve_off": 0x28},
 }
 
+#add sensor_held?
+
 VALVE_OPEN_TIME = 0.150
 ITI_MIN = 3.0
 ITI_MAX = 6.0

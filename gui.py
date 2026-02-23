@@ -117,39 +117,53 @@ class PerformanceGUI:
         self.ax_block.set_xticks(x)
         self.ax_block.set_xticklabels(labels, rotation=0)
 
-        if not hasattr(self, "_last_sampling_n"):
-            self._last_sampling_n = -1
+        # =========================
+        # Sampling duration
+        # =========================
+        if "sampling_time" in results_df.columns:
+            if not hasattr(self, "_last_sampling_n"):
+                self._last_sampling_n = -1
 
-        all_trials = results_df["trial_num"].unique()
-        sampling = results_df.set_index("trial_num")["sampling_time"]
+            all_trials = results_df["trial_num"].unique()
+            sampling = results_df.set_index("trial_num")["sampling_time"]
 
-        # count how many trials actually have sampling
-        n_sampling = sampling.notna().sum()
+            # count how many trials actually have sampling
+            n_sampling = sampling.notna().sum()
+            if n_sampling != self._last_sampling_n:
+                self._last_sampling_n = n_sampling
 
-        if n_sampling != self._last_sampling_n:
-            self._last_sampling_n = n_sampling
+                y = [sampling.get(t, 0) or 0 for t in all_trials]
 
-            y = [sampling.get(t, 0) or 0 for t in all_trials]
+                self.ax_sampling.clear()
+                self.ax_sampling.bar(
+                    all_trials,
+                    y,
+                    color="gold",
+                    edgecolor="black"
+                )
 
+                self.ax_sampling.set_ylabel("Sampling time (s)")
+                self.ax_sampling.set_xlim(xmin, xmax)
+                self.ax_sampling.set_xlabel("Trial")
+                self.ax_sampling.set_title("Sampling duration per trial", pad=10, fontsize=10)
+                self.ax_sampling.grid(True, axis="y")
+        else:
             self.ax_sampling.clear()
-            self.ax_sampling.bar(
-                all_trials,
-                y,
-                color="gold",
-                edgecolor="black"
-            )
-
             self.ax_sampling.set_ylabel("Sampling time (s)")
-            self.ax_sampling.set_xlim(xmin, xmax)
             self.ax_sampling.set_xlabel("Trial")
-            self.ax_sampling.set_title("Sampling duration per trial", pad=10, fontsize=10)
+            self.ax_sampling.set_title("Sampling duration per trial (no data)", pad=10, fontsize=10)
+            self.ax_sampling.set_xlim(xmin, xmax)
             self.ax_sampling.grid(True, axis="y")
 
-        for period in results_df["period"].unique():
-            if "Sampling" in period:
-                block_trials = results_df[results_df["period"] == period]["trial_num"]
-                self.ax_rt.axvspan(block_trials.min() - 0.5, block_trials.max() + 0.5,
-                                   color="lightgray", alpha=0.3)
+        # =========================
+        # Period shading
+        # =========================
+        if "period" in results_df.columns:
+            for period in results_df["period"].unique():
+                if "Sampling" in period:
+                    block_trials = results_df[results_df["period"] == period]["trial_num"]
+                    self.ax_rt.axvspan(block_trials.min() - 0.5, block_trials.max() + 0.5,
+                                        color="lightgray", alpha=0.3)
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()

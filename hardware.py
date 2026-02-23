@@ -15,6 +15,7 @@ from utils import parse_beambreak, now
 COMMANDS = {
     "A": {"led_on": 0x21, "led_off": 0x22, "valve_on": 0x23, "valve_off": 0x24},
     "B": {"led_on": 0x25, "led_off": 0x26, "valve_on": 0x27, "valve_off": 0x28},
+    "C": {"led_on": 0x29, "led_off": 0x2A, "valve_on": 0x2B, "valve_off": 0x2C},
 }
 
 TABLE_TURN_CCW_45 = 0x08  # 45 degrees counter-clockwise
@@ -34,6 +35,8 @@ TABLE_POSITIONS = {
 }
 
 current_table_position = DEFAULT_TABLE_POSITION
+
+SENSOR_HOLD_TIME = 0.1
 
 STOP_EVENT = threading.Event()
 # ---------------------------
@@ -181,8 +184,20 @@ def set_led(ser, port, on):
     ser.write(bytes([cmds["led_on"] if on else cmds["led_off"]]))
     ser.flush()
 
+#led has to be held for 0.1seconds to count as a valid poke
+def sensor_held(shared: SharedSensorState, port: str) -> bool:
+    start = time.time()
+    while time.time() - start < SENSOR_HOLD_TIME:
+        if STOP_EVENT.is_set():
+            return False
+        st, _ = shared.get_port(port)
+        if st != "triggered":
+            return False
+        time.sleep(0.005)
+    return True
+
 def shutdown_outputs(ser):
-    for p in ("A", "B"):
+    for p in ("A", "B", "C"):
         ser.write(bytes([COMMANDS[p]["led_off"], COMMANDS[p]["valve_off"]]))
     ser.flush()
 
@@ -222,15 +237,15 @@ def open_door(ser):
     ser.write(bytes([DOOR_OPEN]))
     ser.flush()
 
-def wait_for_door_clear(shared_sensor: 'SharedSensorState', timeout=None):
+def wait_for_door_clear(shared: 'SharedSensorState', timeout=None):
     """
     Wait until the door sensor is cleared (rat has left the doorway).
-    shared_sensor: instance of SharedSensorState tracking snsr_door
+    shared: instance of SharedSensorState tracking snsr_door
     timeout: optional maximum seconds to wait
     """
     start_time = time.time()
     while True:
-        state, _ = shared_sensor.get_port("door")
+        state, _ = shared.get_port("door")
         if state == "cleared":
             break
         if timeout and (time.time() - start_time) > timeout:

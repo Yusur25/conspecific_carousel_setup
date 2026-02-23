@@ -125,6 +125,7 @@ def main():
             phase4.perf_gui.results_df.to_csv(trial_csv, index=False)
             print(f"[INFO] Trials saved: {trial_csv}")
 
+        listener.join(timeout=1) #added recently - could remove previous gui update blocks
         shutdown_outputs(ser)
         ser.close()
         perf_gui.close(save_path=perf_fig_path)
