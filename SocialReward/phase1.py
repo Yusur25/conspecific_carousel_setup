@@ -16,13 +16,14 @@ ITI_MAX = 10.0
 
 
 class Phase1Session:
-    def __init__(self, ser, shared: SharedSensorState,
+    def __init__(self, ser, shared: SharedSensorState, valve_time,
                  save_dir: str, animal_name: str,
                  session_duration: float = 3600):
         self.ser = ser
         self.shared = shared
         self.save_dir = save_dir
         self.animal_name = animal_name
+        self.valve_time = valve_time
         self.session_duration = session_duration
 
         self.port = "C"
@@ -51,6 +52,12 @@ class Phase1Session:
             self.trial_counter += 1
             trial_start = now()
             set_led(self.ser, self.port, True)
+            # require port to be cleared before accepting a new poke
+            while self.running and not STOP_EVENT.is_set():
+                st, _ = self.shared.get_port(self.port)
+                if st == "cleared":
+                    break
+                time.sleep(0.005)
             rewarded = False
 
             # Wait for poke at port C
@@ -60,7 +67,7 @@ class Phase1Session:
                     rewarded = True
                     trial_end = now()
                     rt = (trial_end - trial_start).total_seconds()
-                    deliver_reward(self.ser, self.port)
+                    deliver_reward(self.ser, self.port, self.valve_time)
                     break
                 time.sleep(0.01)
 

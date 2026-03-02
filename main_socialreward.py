@@ -1,10 +1,8 @@
 import serial
-import threading
 import argparse
 import time
 import signal
 import os
-import matplotlib.pyplot as plt
 from datetime import datetime
 from hardware import SharedSensorState, SerialListener, STOP_EVENT, shutdown_outputs
 from gui import SensorGUI, PerformanceGUI
@@ -14,13 +12,15 @@ from SocialReward.phase1 import Phase1Session
 
 """All phases of social reward training in one script 
  Run with --phase 1, 2, 3 or 4 to select phase.
-# Phase 1: learn to poke port C for reward 
-# Phase 2: learn to poke port A when LED is on, then hold table_sensor for 100 ms to get reward at port C
-# Phase 3: same as phase 2 but table hold is 2 seconds
-# Phase 4: same as phase 3 but restrict port C led to 5 seconds
+# Phase 1: learn to poke port C for reward (port C LED -> rat pokes -> reward)
+# Phase 2: door automatically opens, rats holds table sensor for 100ms minimum, then C led comes on -> rat pokes -> reward
+# Phase 3a: learn to poke port A when LED is on, then hold table_sensor for 100 ms to get reward at port C
+# Phase 3b: same as phase 2 but table hold gradually increases throughout the trial to reach 2 seconds
+# Phase 4: table hold is 2 seconds and restrict port C led to 5 seconds
 #
 """
 
+valve_time = 0.3  # change based on todays calibration, aim for 10-15 ul per poke
 
 def handle_sigint(sig, frame):
     STOP_EVENT.set()
@@ -41,7 +41,7 @@ def main():
     sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
     perf_fig_path = os.path.join(BASE_SAVE_DIR, "performance.png")
 
-    phase = input("Which phase? (1/2/3/4): ").strip()
+    phase = input("Which phase? (1/2/3a/3b/4): ").strip()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
@@ -81,6 +81,7 @@ def main():
                 shared,
                 save_dir=BASE_SAVE_DIR,
                 animal_name=animal,
+                valve_time=valve_time,
                 session_duration=3600  # 1 hour
             )
             session.start()
@@ -95,22 +96,41 @@ def main():
 
             print("[INFO] Phase 1 session finished")
 
-        elif phase in ("2", "3", "4"):
+        elif phase in ("2", "3a", "3b", "4"):
             if phase == "2":
+                table_hold = 0.100
+                led_time = None
+                require_port_a = False
+            elif phase == "3a":
                 table_hold = 0.100 # seconds
                 led_time = None # unlimited time
-            elif phase == "3":
-                table_hold = 2 # seconds
+                require_port_a = True
+            elif phase == "3b":
+                def gradual_hold(session):
+                    trial = session.trial_counter
+                    if trial < 15:
+                        return 0.5
+                    elif trial < 30:
+                        return 1.0
+                    elif trial < 50:
+                        return 1.5
+                    else:
+                        return 2.0
+                table_hold = gradual_hold
                 led_time = None  # unlimited time
+                require_port_a = True
             else: # phase 4
                 table_hold = 2  # seconds
                 led_time = 5  # seconds
+                require_port_a = True
 
             session = SocialRewardSession(
                 ser,
                 shared,
                 table_hold=table_hold,
                 led_on_time= led_time,  # unlimited time
+                require_port_a=require_port_a,
+                valve_time=valve_time,
                 session_duration=3600  # 1 hour
             )
             print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")

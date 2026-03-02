@@ -18,8 +18,14 @@ COMMANDS = {
     "C": {"led_on": 0x29, "led_off": 0x2A, "valve_on": 0x2B, "valve_off": 0x2C},
 }
 
-TABLE_TURN_CCW_45 = 0x08  # 45 degrees counter-clockwise
-TABLE_TURN_CW_45  = 0x09  # 45 degrees clockwise
+TABLE_TURN_CCW_45 = 0x08
+TABLE_TURN_CW_45  = 0x09
+TABLE_TURN_CCW_90  = 0x2D
+TABLE_TURN_CW_90   = 0x2E
+TABLE_TURN_CCW_180 = 0x2F
+TABLE_TURN_CW_180  = 0x30
+TABLE_TURN_CCW_270 = 0x31
+TABLE_TURN_CW_270  = 0x32
 DOOR_OPEN  = 0x10
 DOOR_CLOSE = 0x11
 
@@ -28,10 +34,9 @@ DEFAULT_TABLE_POSITION = 0
 # Position definitions (in 45° steps from default)
 TABLE_POSITIONS = {
     0: 0,   # default / home
-    1: 1,   # 45° CW
-    2: 3,   # 135° CW
-    3: -3,   # 135° CW
-    4: -1,  # 45° CCW
+    1: 90,
+    2: 180,
+    3: 270,
 }
 
 current_table_position = DEFAULT_TABLE_POSITION
@@ -202,18 +207,30 @@ def shutdown_outputs(ser):
     ser.flush()
 
 
-def turn_table(ser, steps: int):
-    if steps == 0:
+def turn_table_degrees(ser, delta_degrees: int):
+    if delta_degrees == 0:
         return
 
-    # Send ONE command with total steps
+    # Normalize to -270 to +270
+    delta = delta_degrees % 360
+    if delta > 180:
+       delta -= 360  # choose shortest path
 
-    cmd = TABLE_TURN_CW_45 if steps > 0 else TABLE_TURN_CCW_45
+    direction = "CW" if delta > 0 else "CCW"
+    angle = abs(delta)
 
-    print(f"[DEBUG] Sending single command for {steps} steps")
+    print(f"[DEBUG] Turning {direction} {angle} degrees")
 
-    # Send step count AFTER command byte
-    ser.write(bytes([cmd, abs(steps)]))
+    if angle == 90:
+        cmd = TABLE_TURN_CW_90 if delta > 0 else TABLE_TURN_CCW_90
+    elif angle == 180:
+        cmd = TABLE_TURN_CW_180 if delta > 0 else TABLE_TURN_CCW_180
+    elif angle == 270:
+        cmd = TABLE_TURN_CW_270 if delta > 0 else TABLE_TURN_CCW_270
+    else:
+        raise ValueError(f"Unsupported rotation angle: {angle}")
+
+    ser.write(bytes([cmd]))
     ser.flush()
 
 def move_table_to_position(ser, target_position: int):
@@ -222,11 +239,12 @@ def move_table_to_position(ser, target_position: int):
     if target_position not in TABLE_POSITIONS:
         raise ValueError(f"Unknown table position {target_position}")
 
-    current_steps = TABLE_POSITIONS[current_table_position]
-    target_steps = TABLE_POSITIONS[target_position]
+    current_angle = TABLE_POSITIONS[current_table_position]
+    target_angle = TABLE_POSITIONS[target_position]
 
-    delta = target_steps - current_steps
-    turn_table(ser, delta)
+    delta = target_angle - current_angle
+
+    turn_table_degrees(ser, delta)
 
     current_table_position = target_position
 
