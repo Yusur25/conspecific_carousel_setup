@@ -116,9 +116,6 @@ class SocialRewardSession:
 
             print(f"Hold too short ({sampling_time:.3f}s), retrying...")
 
-        wait_for_door_clear(self.shared)
-        close_door(self.ser)
-
         # Port C
         set_led(self.ser, "C", True)
         # require port to be cleared before accepting a new poke
@@ -128,6 +125,9 @@ class SocialRewardSession:
                 break
             time.sleep(0.005)
         trial_start = time.time()
+        
+        wait_for_door_clear(self.shared)
+        close_door(self.ser)
 
         poked = self.wait_for_poke("C")
         trial_end = time.time()

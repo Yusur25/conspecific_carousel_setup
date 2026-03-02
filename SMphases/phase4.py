@@ -146,19 +146,19 @@ class Phase4Experiment:
     def _run(self):
         try:
             # Initial classical conditioning
-            self.run_classical_conditioning(duration_minutes=1, period_name="CC1")
+            self.run_classical_conditioning(duration_minutes=5, period_name="CC1")
 
             for i in range(4):
                 if not self.running or STOP_EVENT.is_set():
                     return
 
                 sampling_name = f"Sampling_{i+1}"
-                self.run_sampling(sample_minutes=1, table_position=1, period_name=sampling_name)
+                self.run_sampling(sample_minutes=5, table_position=1, period_name=sampling_name)
                 cc_name = f"CC{i + 2}"
-                self.run_classical_conditioning(duration_minutes=1, period_name=cc_name)
+                self.run_classical_conditioning(duration_minutes=10, period_name=cc_name)
 
             # Final sampling with new table position
-            self.run_sampling(sample_minutes=1, table_position=4, period_name="Sampling_5")
+            self.run_sampling(sample_minutes=5, table_position=4, period_name="Sampling_5")
 
         finally:
             reset_table_to_default(self.ser)

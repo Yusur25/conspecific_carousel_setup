@@ -11,8 +11,8 @@ import pandas as pd
 from datetime import datetime
 from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT, sensor_held
 
-ITI_MIN = 5.0
-ITI_MAX = 10.0
+ITI_MIN = 8.0
+ITI_MAX = 15.0
 
 
 def pick_port(presentation_history, forced_port):
