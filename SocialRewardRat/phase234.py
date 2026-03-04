@@ -13,7 +13,7 @@ ITI_MAX = 10.0
 
 class SocialRewardSession:
 
-    def __init__(self, ser, shared, table_hold, led_on_time, valve_start, require_port_a=True, session_duration=None):
+    def __init__(self, ser, shared, table_hold, led_on_time, valve_time, require_port_a=True, session_duration=None):
         """
         session_duration: seconds (None = run until stopped)
         """
@@ -24,7 +24,7 @@ class SocialRewardSession:
         self.led_on_time = led_on_time
         self.require_port_a = require_port_a
         self.session_duration = session_duration
-        self.valve_start = valve_start
+        self.valve_time = valve_time
         self.running = False
         self.trial_counter = 0
         self.reward_count = 0
@@ -104,7 +104,7 @@ class SocialRewardSession:
                 time.sleep(0.005)
             if not self.wait_for_poke("A"):
                 return
-            #deliver_reward(self.ser, "A", self.valve_start)
+            #deliver_reward(self.ser, "A", self.valve_time)
             set_led(self.ser, "A", False)
 
         open_door(self.ser)
@@ -138,7 +138,7 @@ class SocialRewardSession:
         rewarded = poked
 
         if poked:
-            valve_time_used = incremental_reward(self.ser, "C", self.valve_start, self.reward_count)
+            valve_time_used = incremental_reward(self.ser, "C", self.valve_time, self.reward_count)
             self.reward_count += 1
 
         set_led(self.ser, "C", False)
