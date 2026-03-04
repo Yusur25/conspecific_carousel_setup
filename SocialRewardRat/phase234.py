@@ -2,7 +2,7 @@ import time
 import random
 import threading
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, open_door,close_door, wait_for_door_clear, STOP_EVENT)
+from hardware import (set_led, sensor_held, deliver_reward, incremental_reward, open_door, close_door, wait_for_door_clear, STOP_EVENT)
 
 """script for phases 2,3,4"""
 
@@ -13,7 +13,7 @@ ITI_MAX = 10.0
 
 class SocialRewardSession:
 
-    def __init__(self, ser, shared, table_hold, led_on_time, valve_time, require_port_a=True, session_duration=None):
+    def __init__(self, ser, shared, table_hold, led_on_time, valve_start, require_port_a=True, session_duration=None):
         """
         session_duration: seconds (None = run until stopped)
         """
@@ -24,13 +24,14 @@ class SocialRewardSession:
         self.led_on_time = led_on_time
         self.require_port_a = require_port_a
         self.session_duration = session_duration
-        self.valve_time = valve_time
+        self.valve_start = valve_start
         self.running = False
         self.trial_counter = 0
+        self.reward_count = 0
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
-            "rt", "iti", "reward_triggered", "sampling_time"
+            "rt", "iti", "reward_triggered", "sampling_time", "valve_time"
         ])
 
     # ----------------------------
@@ -78,6 +79,8 @@ class SocialRewardSession:
         print("[INFO] Session ended")
 
     def run_trial(self):
+        sampling_time = 0
+        valve_time_used = None
         # Determine required table hold for this trial
         if callable(self.table_hold):
             required_hold = self.table_hold(self)
@@ -101,6 +104,7 @@ class SocialRewardSession:
                 time.sleep(0.005)
             if not self.wait_for_poke("A"):
                 return
+            #deliver_reward(self.ser, "A", self.valve_start)
             set_led(self.ser, "A", False)
 
         open_door(self.ser)
@@ -134,7 +138,8 @@ class SocialRewardSession:
         rewarded = poked
 
         if poked:
-            deliver_reward(self.ser, "C", self.valve_time)
+            valve_time_used = incremental_reward(self.ser, "C", self.valve_start, self.reward_count)
+            self.reward_count += 1
 
         set_led(self.ser, "C", False)
 
@@ -147,7 +152,8 @@ class SocialRewardSession:
             "rt": rt,
             "iti": iti,
             "reward_triggered": rewarded,
-            "sampling_time": sampling_time
+            "sampling_time": sampling_time,
+            "valve_time": valve_time_used
         }
 
         # ITI
