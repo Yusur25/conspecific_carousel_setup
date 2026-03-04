@@ -15,7 +15,7 @@ def parse_beambreak(msg: str) -> Tuple[Optional[str], Optional[str]]:
     if "port a" in msg_l: return "A", state
     if "port b" in msg_l: return "B", state
     if "port c" in msg_l: return "C", state
-    if "door" in msg_l: return "door", state
+    if "door" in msg_l: return "doorsensor", state
     if "table" in msg_l: return "table", state
     return None, None
 

@@ -223,7 +223,7 @@ class SensorGUI:
             "green" if snapshot.B == "triggered" else "red")
         self.circle_c.set_facecolor(
             "green" if snapshot.C == "triggered" else "red")
-        self.circle_door.set_facecolor("green" if snapshot.door == "triggered" else "red")
+        self.circle_door.set_facecolor("green" if snapshot.doorsensor == "triggered" else "red")
         self.circle_table.set_facecolor("green" if snapshot.table == "triggered" else "red")
 
         # Pulse effect
@@ -235,7 +235,7 @@ class SensorGUI:
         a_age = snapshot.tA.strftime("%H:%M:%S.%f")[:-3] if snapshot.tA else "-"
         b_age = snapshot.tB.strftime("%H:%M:%S.%f")[:-3] if snapshot.tB else "-"
         c_age = snapshot.tC.strftime("%H:%M:%S.%f")[:-3] if snapshot.tC else "-"
-        door_age = snapshot.tDoor.strftime("%H:%M:%S.%f")[:-3] if snapshot.tDoor else "-"
+        door_age = snapshot.tDoorsensor.strftime("%H:%M:%S.%f")[:-3] if snapshot.tDoorsensor else "-"
         table_age = snapshot.tTable.strftime("%H:%M:%S.%f")[:-3] if snapshot.tTable else "-"
 
         self.text_c.set_text(c_age)

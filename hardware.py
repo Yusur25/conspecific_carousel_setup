@@ -55,6 +55,8 @@ class SensorSnapshot:
     tA: Optional[datetime]
     tB: Optional[datetime]
     tC: Optional[datetime]
+    doorsensor: Optional[str] = None
+    tDoorsensor: Optional[datetime] = None
     door: Optional[str] = None
     tDoor: Optional[datetime] = None
     table: Optional[str] = None
@@ -70,9 +72,9 @@ class SharedSensorState:
     def __init__(self):
         self._lock = threading.Lock()
         self.state = {"A": "cleared", "B": "cleared", "C": "cleared",
-                      "door": "cleared", "table": "cleared"}
+                      "doorsensor": "cleared", "table": "cleared", "door": "unknown"}
         self.last_change = {"A": None, "B": None, "C": None,
-                            "door": None, "table": None}
+                            "doorsensor": None, "table": None, "door": None}
 
     def update(self, port: str, state: str, ts: datetime) -> None:
         with self._lock:
@@ -88,10 +90,12 @@ class SharedSensorState:
                 tA=self.last_change["A"],
                 tB=self.last_change["B"],
                 tC=self.last_change["C"],
-                door=self.state["door"],
-                tDoor=self.last_change["door"],
+                doorsensor=self.state["doorsensor"],
+                tDoorsensor=self.last_change["doorsensor"],
                 table=self.state["table"],
                 tTable=self.last_change["table"],
+                door=self.state["door"],
+                tDoor=self.last_change["door"],
             )
 
     def get_port(self, port: str) -> Tuple[str, Optional[datetime]]:
@@ -110,9 +114,9 @@ class SerialListener(threading.Thread):
         self.shared = shared
         self.event_log_path = event_log_path
         self.table_event_start = None
-        self.door_event_start = None
+        self.doorsensor_event_start = None
         self.table_csv_path = table_csv_path
-        self.door_csv_path = door_csv_path
+        self.doorsensor_csv_path = door_csv_path
 
         self.session_start = time.time()  # track session start
 
@@ -123,8 +127,8 @@ class SerialListener(threading.Thread):
         if self.table_csv_path and not os.path.exists(self.table_csv_path):
             with open(self.table_csv_path, "w", encoding="utf-8") as f:
                 f.write("start,end\n")
-        if self.door_csv_path and not os.path.exists(self.door_csv_path):
-            with open(self.door_csv_path, "w", encoding="utf-8") as f:
+        if self.doorsensor_csv_path and not os.path.exists(self.doorsensor_csv_path):
+            with open(self.doorsensor_csv_path, "w", encoding="utf-8") as f:
                 f.write("start,end\n")
 
     def run(self):
@@ -143,16 +147,29 @@ class SerialListener(threading.Thread):
             if not msg:
                 continue
 
+            msg_l = msg.lower()
+
+            ts = now()
+            seconds_since_start = time.time() - self.session_start
+
+
+            # Handle door state messages
+            if msg_l in ("door opened", "door closed", "door moving"):
+                self.shared.update("door", msg_l, ts)
+
+                with open(self.event_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},door,{msg_l},{msg}\n")
+
+                continue
+
+
+            # Handle beambreak sensors
             port, state = parse_beambreak(msg)
             if port is None:
                 continue
 
-
-            ts = now()  # datetime object
-            seconds_since_start = time.time() - self.session_start
             self.shared.update(port, state, ts)
 
-            # log all sensor events with raw text
             with open(self.event_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},{port},{state},{msg}\n")
 
@@ -164,13 +181,13 @@ class SerialListener(threading.Thread):
                         f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
                     self.table_event_start = None
 
-            if port == "door" and self.door_csv_path:
+            if port == "doorsensor" and self.doorsensor_csv_path:
                 if state == "triggered":
-                    self.door_event_start = seconds_since_start
-                elif state == "cleared" and self.door_event_start is not None:
-                    with open(self.door_csv_path, "a", encoding="utf-8") as f:
-                        f.write(f"{self.door_event_start:.3f},{seconds_since_start:.3f}\n")
-                    self.door_event_start = None
+                    self.doorsensor_event_start = seconds_since_start
+                elif state == "cleared" and self.doorsensor_event_start is not None:
+                    with open(self.doorsensor_csv_path, "a", encoding="utf-8") as f:
+                        f.write(f"{self.doorsensor_event_start:.3f},{seconds_since_start:.3f}\n")
+                    self.doorsensor_event_start = None
 
 #-----------------------------
 # Hardware control functions
@@ -255,6 +272,27 @@ def open_door(ser):
     ser.write(bytes([DOOR_OPEN]))
     ser.flush()
 
+def wait_for_door_state(shared: SharedSensorState, target_state: str, timeout=None):
+    """
+    Wait until mechanical door reaches a specific state:
+    'door opened', 'door closed', or 'door moving'
+    """
+    start_time = time.time()
+
+    while True:
+        if STOP_EVENT.is_set():
+            return False
+        state, _ = shared.get_port("door")
+
+        if state == target_state:
+            return True
+
+        if timeout and (time.time() - start_time) > timeout:
+            print(f"[WARNING] Door did not reach state '{target_state}' within timeout")
+            return False
+
+        time.sleep(0.01)
+
 def wait_for_door_clear(shared: 'SharedSensorState', timeout=None):
     """
     Wait until the door sensor is cleared (rat has left the doorway).
@@ -263,7 +301,7 @@ def wait_for_door_clear(shared: 'SharedSensorState', timeout=None):
     """
     start_time = time.time()
     while True:
-        state, _ = shared.get_port("door")
+        state, _ = shared.get_port("doorsensor")
         if state == "cleared":
             break
         if timeout and (time.time() - start_time) > timeout:
@@ -271,7 +309,27 @@ def wait_for_door_clear(shared: 'SharedSensorState', timeout=None):
             break
         time.sleep(0.01)  # avoid busy-wait
 
-def close_door(ser):
+def close_door(ser, shared, timeout=5):
+    """
+    Close door only after:
+    1. Mechanical door confirmed opened
+    2. Doorway sensor cleared
+    """
+
+    # Ensure door actually opened at some point
+    state, _ = shared.get_port("door")
+    if state != "door opened":
+        print("[INFO] Waiting for door to reach opened state before closing...")
+        success = wait_for_door_state(shared, "door opened", timeout)
+        if not success:
+            print("[ERROR] Door failed to open; aborting close.")
+            return
+
+
+    # Ensure doorway is clear
+    wait_for_door_clear(shared, timeout)
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
+
+    wait_for_door_state(shared, "door closed", timeout)
 

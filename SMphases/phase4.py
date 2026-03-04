@@ -118,12 +118,8 @@ class Phase4Experiment:
 
         sampling_duration = sum(sampling_durations)
 
-        # Wait until rat clears doorway
-        print("[INFO] Waiting for rat to leave doorway...")
-        wait_for_door_clear(self.shared)
-
         # Close door, reset table
-        close_door(self.ser)
+        close_door(self.ser, self.shared)
         reset_table_to_default(self.ser)
 
         # append to results_df

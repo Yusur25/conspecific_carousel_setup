@@ -125,9 +125,8 @@ class SocialRewardSession:
                 break
             time.sleep(0.005)
         trial_start = time.time()
-        
-        wait_for_door_clear(self.shared)
-        close_door(self.ser)
+
+        close_door(self.ser, self.shared)
 
         poked = self.wait_for_poke("C")
         trial_end = time.time()
