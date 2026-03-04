@@ -346,5 +346,3 @@ def close_door(ser, shared, timeout=5):
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
 
-    wait_for_door_state(shared, "door closed", timeout)
-
