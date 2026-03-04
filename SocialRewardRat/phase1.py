@@ -3,7 +3,7 @@ import random
 import time
 import pandas as pd
 import threading
-from hardware import set_led, deliver_reward, SharedSensorState, STOP_EVENT, sensor_held
+from hardware import set_led, deliver_reward, incremental_reward, SharedSensorState, STOP_EVENT, sensor_held
 from utils import now, parse_beambreak, safe_filename
 import os
 
@@ -16,20 +16,20 @@ ITI_MAX = 10.0
 
 
 class Phase1Session:
-    def __init__(self, ser, shared: SharedSensorState, valve_time,
+    def __init__(self, ser, shared: SharedSensorState, valve_start,
                  save_dir: str, animal_name: str,
                  session_duration: float = 3600):
         self.ser = ser
         self.shared = shared
         self.save_dir = save_dir
         self.animal_name = animal_name
-        self.valve_time = valve_time
+        self.valve_start = valve_start
         self.session_duration = session_duration
 
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
-            "rt", "iti", "reward_triggered"
+            "rt", "iti", "reward_triggered", "valve_start"
         ])
         self.trial_counter = 0
         self.running = False
@@ -48,6 +48,7 @@ class Phase1Session:
 
     def _run_session(self):
         start_time = time.time()
+        reward_count = 0
         while self.running and not STOP_EVENT.is_set() and (time.time() - start_time) < self.session_duration:
             self.trial_counter += 1
             trial_start = now()
@@ -67,7 +68,8 @@ class Phase1Session:
                     rewarded = True
                     trial_end = now()
                     rt = (trial_end - trial_start).total_seconds()
-                    deliver_reward(self.ser, self.port, self.valve_time)
+                    valve_time_used = incremental_reward(self.ser, "C", self.valve_start, reward_count)
+                    reward_count += 1
                     break
                 time.sleep(0.01)
 
@@ -85,7 +87,8 @@ class Phase1Session:
                 "trial_end": trial_end,
                 "rt": rt,
                 "iti": iti,
-                "reward_triggered": rewarded
+                "reward_triggered": rewarded,
+                "valve_time": "valve_time_used
             }
 
             # ITI
