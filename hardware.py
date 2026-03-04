@@ -200,6 +200,21 @@ def deliver_reward(ser, port, valve_time=0.15):
     time.sleep(valve_time)
     ser.write(bytes([cmds["valve_off"]]))
     ser.flush()
+    
+def incremental_reward(ser, port, valve_start, reward_count, increment=0.033):
+    valve_time = valve_start + (reward_count * increment)
+
+    cmds = COMMANDS[port]
+    
+    ser.write(bytes([cmds["valve_on"]]))
+    ser.flush()
+    
+    time.sleep(valve_time)
+    
+    ser.write(bytes([cmds["valve_off"]]))
+    ser.flush()
+
+    return valve_time
 
 def set_led(ser, port, on):
     cmds = COMMANDS[port]
