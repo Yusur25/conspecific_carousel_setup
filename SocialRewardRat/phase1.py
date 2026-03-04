@@ -16,20 +16,20 @@ ITI_MAX = 10.0
 
 
 class Phase1Session:
-    def __init__(self, ser, shared: SharedSensorState, valve_start,
+    def __init__(self, ser, shared: SharedSensorState, valve_time,
                  save_dir: str, animal_name: str,
                  session_duration: float = 3600):
         self.ser = ser
         self.shared = shared
         self.save_dir = save_dir
         self.animal_name = animal_name
-        self.valve_start = valve_start
+        self.valve_time = valve_time
         self.session_duration = session_duration
 
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
-            "rt", "iti", "reward_triggered", "valve_start"
+            "rt", "iti", "reward_triggered", "valve_time"
         ])
         self.trial_counter = 0
         self.running = False
@@ -68,7 +68,7 @@ class Phase1Session:
                     rewarded = True
                     trial_end = now()
                     rt = (trial_end - trial_start).total_seconds()
-                    valve_time_used = incremental_reward(self.ser, "C", self.valve_start, reward_count)
+                    valve_time_used = incremental_reward(self.ser, "C", self.valve_time, reward_count)
                     reward_count += 1
                     break
                 time.sleep(0.01)
