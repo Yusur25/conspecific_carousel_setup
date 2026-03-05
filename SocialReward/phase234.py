@@ -124,11 +124,16 @@ class SocialRewardSession:
             if st == "cleared":
                 break
             time.sleep(0.005)
+            
         trial_start = time.time()
+        if self.led_on_time is None:
+            deadline = None
+        else:
+            deadline = trial_start + self.led_on_time
 
-        close_door(self.ser, self.shared)
+        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
 
-        poked = self.wait_for_poke("C")
+        poked = self.wait_for_poke("C", deadline=deadline)
         trial_end = time.time()
         rt = (trial_end - trial_start) if poked else self.led_on_time
         rewarded = poked
@@ -160,20 +165,17 @@ class SocialRewardSession:
     # ----------------------------
 
     def wait_for_poke(self, port):
-        if port == "C" and self.led_on_time is not None:
-            deadline = time.time() + self.led_on_time
-        else:
-            deadline = float('inf')  # no limit
-
-        while time.time() < deadline:
+        while True:
             if not self.running or STOP_EVENT.is_set():
                 break
+
+            if deadline is not None and time.time() >= deadline:
+                return False
 
             state, _ = self.shared.get_port(port)
             if state == "triggered" and sensor_held(self.shared, port):
                 return True
             time.sleep(0.001)
-        return False
 
 
     def wait_for_table_hold(self):
