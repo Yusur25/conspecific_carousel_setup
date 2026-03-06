@@ -4,7 +4,7 @@ import random
 import threading
 import numpy as np
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, open_door,close_door, wait_for_door_clear, STOP_EVENT)
+from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, STOP_EVENT)
 
 """script for phases 2,3,4"""
 
@@ -155,7 +155,7 @@ class SocialRewardSession:
         else:
             deadline = ledC_onset_time + self.led_on_time
 
-        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+        threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
         poked = self.wait_for_poke("C", deadline=deadline)
         trial_end = time.time()
@@ -165,6 +165,9 @@ class SocialRewardSession:
         if poked:
             close_door(self.ser) # <- delayed to here until firmware can be changed
             deliver_reward(self.ser, "C", self.valve_time)
+        else:
+            if self.led_on_time is not None: # phase 4
+                close_door(self.ser) # <- delayed to here until firmware can be changed
 
         set_led(self.ser, "C", False)
 
@@ -193,7 +196,7 @@ class SocialRewardSession:
     # Helper functions
     # ----------------------------
 
-    def wait_for_poke(self, port):
+    def wait_for_poke(self, port, deadline=None):
         while True:
             if not self.running or STOP_EVENT.is_set():
                 break
