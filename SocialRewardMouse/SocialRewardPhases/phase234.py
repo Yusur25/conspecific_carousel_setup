@@ -11,7 +11,6 @@ from hardware import (set_led, sensor_held, deliver_reward, open_door, close_doo
 ITI_MIN = 5.0 #seconds
 ITI_MAX = 10.0
 
-
 class SocialRewardSession:
 
     def __init__(self, ser, shared, table_hold, led_on_time, valve_time, require_port_a=True, session_duration=None):
@@ -32,8 +31,9 @@ class SocialRewardSession:
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
             "rt",                    # LED C -> poke C
-            "rt_tablehold",          # Door open -> successful table hold/LED C
+            "rt_tablehold",          # Door open -> table hold (LED C)
             "rt_dooropen",           # LED A -> door open
+            "auto_dooropen",
             "iti", "reward_triggered", "sampling_time"
         ])
 
@@ -99,11 +99,14 @@ class SocialRewardSession:
         print("Trial start")
 
         rt_dooropen = None
+        auto_dooropen = False
 
         if self.require_port_a:
+
             # Port A
             set_led(self.ser, "A", True)
             ledA_onset_time = time.time()
+            deadlineA = ledA_onset_time + 200  # auto-open after 200 s
 
             # require port to be cleared before accepting a new poke
             while self.running and not STOP_EVENT.is_set():
@@ -112,10 +115,14 @@ class SocialRewardSession:
                     break
                 time.sleep(0.005)
 
-            pokedA = self.wait_for_poke("A")
+            pokedA = self.wait_for_poke("A", deadline=deadlineA)
 
             if pokedA:
                 rt_dooropen = time.time() - ledA_onset_time
+            else:
+                rt_dooropen = 200
+                auto_dooropen = True
+                print("Port A timeout (200 s); door auto-opens")
 
             set_led(self.ser, "A", False)
 
@@ -138,6 +145,7 @@ class SocialRewardSession:
 
         # Port C
         set_led(self.ser, "C", True)
+
         # require port to be cleared before accepting a new poke
         while self.running and not STOP_EVENT.is_set():
             st, _ = self.shared.get_port(self.port)
@@ -147,22 +155,22 @@ class SocialRewardSession:
         trial_start = time.time()
         ledC_onset_time = trial_start
         
-        # wait_for_door_clear(self.shared) <- delayed from here until firmware can be changed
-        # close_door(self.ser)
+        # wait_for_door_clear(self.shared)
+        # close_door(self.ser) <- delayed from here until firmware can be changed
 
         if self.led_on_time is None:
-            deadline = None
+            deadlineC = None
         else:
-            deadline = ledC_onset_time + self.led_on_time
+            deadlineC = ledC_onset_time + self.led_on_time
 
         threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
-        poked = self.wait_for_poke("C", deadline=deadline)
+        pokedC = self.wait_for_poke("C", deadline=deadlineC)
         trial_end = time.time()
-        rt = (trial_end - trial_start) if poked else self.led_on_time
-        rewarded = poked
+        rt = (trial_end - trial_start) if pokedC else self.led_on_time
+        rewarded = pokedC
 
-        if poked:
+        if pokedC:
             close_door(self.ser) # <- delayed to here until firmware can be changed
             deliver_reward(self.ser, "C", self.valve_time)
         else:
@@ -180,8 +188,9 @@ class SocialRewardSession:
             "trial_start": trial_start if trial_start is not None else np.nan,
             "trial_end": trial_end if trial_end is not None else np.nan,
             "rt": rt if rt is not None else np.nan,
-            "rt_dooropen": rt_dooropen if rt_dooropen is not None else np.nan,
             "rt_tablehold": rt_tablehold if rt_tablehold is not None else np.nan,
+            "rt_dooropen": rt_dooropen if rt_dooropen is not None else np.nan,
+            "auto_dooropen": auto_dooropen,
             "iti": iti if iti is not None else np.nan,
             "reward_triggered": rewarded if rewarded is not None else np.nan,
             "sampling_time": sampling_time if sampling_time is not None else np.nan
