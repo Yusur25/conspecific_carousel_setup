@@ -1,15 +1,15 @@
+# phase234.py
 import time
 import random
 import threading
+import numpy as np
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, open_door,close_door, wait_for_door_clear, STOP_EVENT)
+from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, STOP_EVENT)
 
 """script for phases 2,3,4"""
 
-
 ITI_MIN = 5.0 #seconds
 ITI_MAX = 10.0
-
 
 class SocialRewardSession:
 
@@ -30,7 +30,11 @@ class SocialRewardSession:
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
-            "rt", "iti", "reward_triggered", "sampling_time"
+            "rt",                    # LED C -> poke C
+            "rt_tablehold",          # Door open -> table hold (LED C)
+            "rt_dooropen",           # LED A -> door open
+            "auto_dooropen",
+            "iti", "reward_triggered", "sampling_time"
         ])
 
     # ----------------------------
@@ -78,105 +82,141 @@ class SocialRewardSession:
         print("[INFO] Session ended")
 
     def run_trial(self):
-        # Determine required table hold for this trial
+        
+        # define required table hold for the trial
         if callable(self.table_hold):
             required_hold = self.table_hold(self)
         else:
             required_hold = self.table_hold
         trial_start = None
         trial_end = None
-        rt = None
+        rt = np.nan
+        rt_dooropen = np.nan
+        rt_tablehold = np.nan
+        sampling_time = np.nan
         rewarded = False
 
         print("Trial start")
 
+        rt_dooropen = None
+        auto_dooropen = False
+
         if self.require_port_a:
+
             # Port A
             set_led(self.ser, "A", True)
+            ledA_onset_time = time.time()
+            deadlineA = ledA_onset_time + 200  # auto-open after 200 s
+
             # require port to be cleared before accepting a new poke
             while self.running and not STOP_EVENT.is_set():
                 st, _ = self.shared.get_port("A")
                 if st == "cleared":
                     break
                 time.sleep(0.005)
-            if not self.wait_for_poke("A"):
-                return
+
+            pokedA = self.wait_for_poke("A", deadline=deadlineA)
+
+            if pokedA:
+                rt_dooropen = time.time() - ledA_onset_time
+            else:
+                rt_dooropen = 200
+                auto_dooropen = True
+                print("Port A timeout (200 s); door auto-opens")
+
             set_led(self.ser, "A", False)
 
         open_door(self.ser)
+        door_open_time = time.time()
+        rt_tablehold = None
 
         # Table hold
         print("Waiting for table hold...")
+        
         while self.running and not STOP_EVENT.is_set():
             sampling_time = self.wait_for_table_hold()
 
             if sampling_time >= required_hold:
-                print(f"Table hold successful: {sampling_time:.3f}s")
+                rt_tablehold = time.time() - door_open_time
+                print(f"Table hold successful: {sampling_time:.3f} s")
                 break
 
-            print(f"Hold too short ({sampling_time:.3f}s), retrying...")
+            print(f"Hold too short ({sampling_time:.3f} s), retrying...")
 
         # Port C
         set_led(self.ser, "C", True)
+
         # require port to be cleared before accepting a new poke
         while self.running and not STOP_EVENT.is_set():
             st, _ = self.shared.get_port(self.port)
             if st == "cleared":
                 break
             time.sleep(0.005)
-            
         trial_start = time.time()
+        ledC_onset_time = trial_start
+        
+        # wait_for_door_clear(self.shared)
+        # close_door(self.ser) <- delayed from here until firmware can be changed
+
         if self.led_on_time is None:
-            deadline = None
+            deadlineC = None
         else:
-            deadline = trial_start + self.led_on_time
+            deadlineC = ledC_onset_time + self.led_on_time
 
-        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+        threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
-        poked = self.wait_for_poke("C", deadline=deadline)
+        pokedC = self.wait_for_poke("C", deadline=deadlineC)
         trial_end = time.time()
-        rt = (trial_end - trial_start) if poked else self.led_on_time
-        rewarded = poked
+        rt = (trial_end - trial_start) if pokedC else self.led_on_time
+        rewarded = pokedC
 
-        if poked:
+        if pokedC:
+            close_door(self.ser) # <- delayed to here until firmware can be changed
             deliver_reward(self.ser, "C", self.valve_time)
+        else:
+            if self.led_on_time is not None: # phase 4
+                close_door(self.ser) # <- delayed to here until firmware can be changed
 
         set_led(self.ser, "C", False)
 
+        # ITI
         iti = random.uniform(ITI_MIN, ITI_MAX)
+
         self.results_df.loc[len(self.results_df)] = {
             "trial_num": self.trial_counter,
             "port": self.port,
-            "trial_start": trial_start,
-            "trial_end": trial_end,
-            "rt": rt,
-            "iti": iti,
-            "reward_triggered": rewarded,
-            "sampling_time": sampling_time
+            "trial_start": trial_start if trial_start is not None else np.nan,
+            "trial_end": trial_end if trial_end is not None else np.nan,
+            "rt": rt if rt is not None else np.nan,
+            "rt_tablehold": rt_tablehold if rt_tablehold is not None else np.nan,
+            "rt_dooropen": rt_dooropen if rt_dooropen is not None else np.nan,
+            "auto_dooropen": auto_dooropen,
+            "iti": iti if iti is not None else np.nan,
+            "reward_triggered": rewarded if rewarded is not None else np.nan,
+            "sampling_time": sampling_time if sampling_time is not None else np.nan
         }
 
-        # ITI
+        print("Trial complete")
+        print(self.results_df.iloc[-1].to_dict())
+        
         self.run_iti(iti)
 
-        print("Trial complete")
-
     # ----------------------------
-    # Helper Methods
+    # Helper functions
     # ----------------------------
 
-    def wait_for_poke(self, port):
+    def wait_for_poke(self, port, deadline=None):
         while True:
             if not self.running or STOP_EVENT.is_set():
                 break
 
             if deadline is not None and time.time() >= deadline:
                 return False
-
+            
             state, _ = self.shared.get_port(port)
             if state == "triggered" and sensor_held(self.shared, port):
                 return True
             time.sleep(0.001)
-
 
     def wait_for_table_hold(self):
         while self.running and not STOP_EVENT.is_set():
