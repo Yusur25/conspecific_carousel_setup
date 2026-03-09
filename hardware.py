@@ -308,20 +308,17 @@ def wait_for_door_state(shared: SharedSensorState, target_state: str, timeout=No
 
         time.sleep(0.01)
 
-def wait_for_door_clear(shared: 'SharedSensorState', timeout=None):
+def wait_for_door_clear(shared: 'SharedSensorState'):
     """
     Wait until the door sensor is cleared (rat has left the doorway).
     shared: instance of SharedSensorState tracking snsr_door
-    timeout: optional maximum seconds to wait
     """
-    start_time = time.time()
     while True:
+        if STOP_EVENT.is_set():
+            return False
         state, _ = shared.get_port("doorsensor")
         if state == "cleared":
-            break
-        if timeout and (time.time() - start_time) > timeout:
-            print("[WARNING] Door sensor did not clear within timeout")
-            break
+            return True
         time.sleep(0.01)  # avoid busy-wait
 
 def close_door(ser, shared, timeout=5):
@@ -342,7 +339,9 @@ def close_door(ser, shared, timeout=5):
 
 
     # Ensure doorway is clear
-    wait_for_door_clear(shared, timeout)
+    if not wait_for_door_clear(shared):
+        print("[ERROR] Doorway still blocked; not closing door")
+        return
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
 
