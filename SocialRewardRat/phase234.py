@@ -104,15 +104,49 @@ class SocialRewardSession:
                 time.sleep(0.005)
             if not self.wait_for_poke("A"):
                 return
-            #deliver_reward(self.ser, "A", self.valve_time)
             set_led(self.ser, "A", False)
 
         open_door(self.ser)
 
-        # Table hold
+        # # Table hold
+        # print("Waiting for table hold...")
+        # while self.running and not STOP_EVENT.is_set():
+        #     sampling_time = self.wait_for_table_hold()
+
+        #     if sampling_time >= required_hold:
+        #         print(f"Table hold successful: {sampling_time:.3f}s")
+        #         break
+
+        #     print(f"Hold too short ({sampling_time:.3f}s), retrying...")
+
+        TABLE_SAMPLE_TIMEOUT = 200
         print("Waiting for table hold...")
         while self.running and not STOP_EVENT.is_set():
-            sampling_time = self.wait_for_table_hold()
+
+            sampling_time = self.wait_for_table_hold(timeout=TABLE_SAMPLE_TIMEOUT)
+
+            if sampling_time is None:
+                print("Table sampling timeout -> missed trial")
+                close_door(self.ser, self.shared)
+
+                trial_end = time.time()
+                iti = random.uniform(ITI_MIN, ITI_MAX)
+
+                self.results_df.loc[len(self.results_df)] = {
+                    "trial_num": self.trial_counter,
+                    "port": self.port,
+                    "trial_start": trial_start,
+                    "trial_end": trial_end,
+                    "rt": None,
+                    "iti": iti,
+                    "reward_triggered": False,
+                    "sampling_time": None,
+                    "valve_time": None
+                }
+
+                self.run_iti(iti)
+                print("Trial complete (missed)")
+                return
 
             if sampling_time >= required_hold:
                 print(f"Table hold successful: {sampling_time:.3f}s")
@@ -128,18 +162,23 @@ class SocialRewardSession:
             if st == "cleared":
                 break
             time.sleep(0.005)
+        
         trial_start = time.time()
+        if self.led_on_time is None:
+            deadline = None
+        else:
+            deadline = trial_start + self.led_on_time
 
-        close_door(self.ser, self.shared)
+        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
 
-        poked = self.wait_for_poke("C")
+        poked = self.wait_for_poke("C", deadline=deadline)
         trial_end = time.time()
         rt = (trial_end - trial_start) if poked else self.led_on_time
         rewarded = poked
 
         if poked:
             valve_time_used = incremental_reward(self.ser, "C", self.valve_time, self.reward_count)
-            self.reward_count += 1
+            self.reward_count += 1
 
         set_led(self.ser, "C", False)
 
@@ -165,25 +204,26 @@ class SocialRewardSession:
     # Helper Methods
     # ----------------------------
 
-    def wait_for_poke(self, port):
-        if port == "C" and self.led_on_time is not None:
-            deadline = time.time() + self.led_on_time
-        else:
-            deadline = float('inf')  # no limit
-
-        while time.time() < deadline:
+    def wait_for_poke(self, port, deadline=None):
+        while True:
             if not self.running or STOP_EVENT.is_set():
                 break
+
+            if deadline is not None and time.time() >= deadline:
+                return False
 
             state, _ = self.shared.get_port(port)
             if state == "triggered" and sensor_held(self.shared, port):
                 return True
             time.sleep(0.001)
-        return False
+        
 
 
-    def wait_for_table_hold(self):
+    def wait_for_table_hold(self, timeout=None):
+        start_wait = time.time ()
         while self.running and not STOP_EVENT.is_set():
+            if timeout and (time.time() - start_wait > timeout):
+                return None
             state, _ = self.shared.get_port("table")
             if state == "triggered":
                 start = time.time()

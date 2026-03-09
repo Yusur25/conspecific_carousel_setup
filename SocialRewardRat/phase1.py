@@ -69,7 +69,7 @@ class Phase1Session:
                     trial_end = now()
                     rt = (trial_end - trial_start).total_seconds()
                     valve_time_used = incremental_reward(self.ser, "C", self.valve_time, reward_count)
-                    reward_count += 1
+                    reward_count += 1
                     break
                 time.sleep(0.01)
 
@@ -88,7 +88,7 @@ class Phase1Session:
                 "rt": rt,
                 "iti": iti,
                 "reward_triggered": rewarded,
-                "valve_time": "valve_time_used
+                "valve_time": "valve_time_used"
             }
 
             # ITI
