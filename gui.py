@@ -57,15 +57,27 @@ class PerformanceGUI:
         # =========================
         # Reaction time plot
         # =========================
-        valid = results_df["reward_triggered"].notna()
+        valid = results_df["rt"].notna()
         trials = results_df.loc[valid, "trial_num"]
         rts = results_df.loc[valid, "rt"]
 
+        colors = []
+        for _, row in results_df.loc[valid].iterrows():
+            if row["outcome"] == "hit":
+                colors.append("green")
+            elif row["outcome"] == "false_alarm":
+                colors.append("red")
+            elif row["outcome"] == "miss":
+                colors.append("orange")
+            elif row["outcome"] == "correct_rejection":
+                colors.append("blue")
+            else:
+                colors.append("blue")  # fallback
+
         self.ax_rt.clear()
-        self.ax_rt.plot(trials, rts, c="blue", alpha=0.7, linewidth=1)
-        self.ax_rt.scatter(trials, rts, c="black", s=30)
+        self.ax_rt.scatter(trials, rts, c=colors, s=30)
         self.ax_rt.set_xlim(xmin, xmax)
-        self.ax_rt.set_ylabel("Reaction time (s)")
+        self.ax_rt.set_ylabel("Reaction time for port C (s)")
         self.ax_rt.set_xlabel("Trial")
         self.ax_rt.grid(True)
 
@@ -73,24 +85,50 @@ class PerformanceGUI:
         # Outcome dots
         # =========================
         self.ax_outcome.clear()
-        self.ax_outcome.set_yticks([0, 1])
-        self.ax_outcome.set_yticklabels(["A", "B"])
+        # Task SESSION MODE
+        if "reward_available" in results_df.columns:
+            self.ax_outcome.set_yticks([0, 1])
+            self.ax_outcome.set_yticklabels(["Unrewarded animal", "Rewarded animal"])
+            self.ax_outcome.set_ylabel("Stimulus")
+
+            for _, row in results_df.iterrows():
+                y = 1 if row["reward_available"] else 0
+                outcome = row.get("outcome", None)
+
+                if outcome == "hit":
+                    color = "green"
+                elif outcome == "miss":
+                    color = "orange"
+                elif outcome == "false_alarm":
+                    color = "red"
+                elif outcome == "correct_rejection":
+                    color = "blue"
+                else:
+                    color = "gray"
+
+                self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
+
+        # TRAINING MODE (old behaviour)
+        else:
+            self.ax_outcome.set_yticks([0, 1])
+            self.ax_outcome.set_yticklabels(["A", "B"])
+            self.ax_outcome.set_ylabel("Port")
+            for _, row in results_df.iterrows():
+                y = 0 if row["port"] == "A" else 1
+                color = "green" if row["reward_triggered"] else "red"
+
+                self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
+
         self.ax_outcome.set_ylim(-0.5, 1.5)
-        self.ax_outcome.set_ylabel("Port")
         self.ax_outcome.set_xlim(xmin, xmax)
         self.ax_outcome.set_xlabel("Trial")
         self.ax_outcome.grid(True, axis="x")
-
-        for _, row in results_df.iterrows():
-            y = 0 if row["port"] == "A" else 1
-            color = "green" if row["reward_triggered"] else "red"
-            self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
 
         # =========================
         # Block performance (10 trials)
         # =========================
         self.ax_block.clear()
-        self.ax_block.set_ylabel("Hit rate (%)")
+        self.ax_block.set_ylabel("Performance (%)")
         self.ax_block.set_xlabel("Trial block (10)")
         self.ax_block.set_ylim(0, 100)
         self.ax_block.grid(True, axis="y")
@@ -104,7 +142,14 @@ class PerformanceGUI:
             if len(block) == 0:
                 continue
 
-            pct = block["reward_triggered"].mean() * 100
+            if "outcome" in results_df.columns:
+                correct = block["outcome"].isin(["hit", "correct_rejection"])
+                pct = correct.mean() * 100
+
+            else:
+
+                pct = block["reward_triggered"].mean() * 100
+
             blocks.append(pct)
 
             t_start = block["trial_num"].iloc[0]

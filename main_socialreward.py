@@ -8,6 +8,7 @@ from hardware import SharedSensorState, SerialListener, STOP_EVENT, shutdown_out
 from gui import SensorGUI, PerformanceGUI
 from SocialReward.phase234 import SocialRewardSession
 from SocialReward.phase1 import Phase1Session
+from SocialReward.social_task import SocialTestSession
 
 
 """All phases of social reward training in one script 
@@ -41,7 +42,7 @@ def main():
     sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
     perf_fig_path = os.path.join(BASE_SAVE_DIR, "performance.png")
 
-    phase = input("Which phase? (1/2/3a/3b/4): ").strip()
+    phase = input("Which phase? (1/2/3a/3b/4/task): ").strip()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
@@ -137,6 +138,22 @@ def main():
             session.start()
 
             # GUI update loop
+            while session.running and not STOP_EVENT.is_set():
+                snap = shared.get()
+                sensor_gui.update(snap)
+                perf_gui.update(session.results_df, current_trial_port="C")
+                time.sleep(0.05)
+
+        elif phase == "task":
+            session = SocialTestSession(
+                ser,
+                shared,
+                valve_time=valve_time,
+                session_duration=3600
+            )
+
+            session.start()
+
             while session.running and not STOP_EVENT.is_set():
                 snap = shared.get()
                 sensor_gui.update(snap)
