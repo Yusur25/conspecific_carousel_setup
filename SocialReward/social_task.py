@@ -147,9 +147,9 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
-        trial_start = time.time()
-
         threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+
+        trial_start = time.time()
 
         poked = self.wait_for_poke("C")
 
