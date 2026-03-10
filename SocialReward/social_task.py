@@ -95,7 +95,7 @@ class SocialTestSession:
         rt = None
 
         reset_table_to_default(self.ser)
-        self.wait(7) # wait for table to go back to default position
+        self.wait(9) # 9 seconds wait for table to go back to default position
 
         # Choose table position
         if not self.position_block:
