@@ -163,7 +163,7 @@ class SocialRewardSession:
         else:
             deadlineC = ledC_onset_time + self.led_on_time
 
-        threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
+        # threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
         pokedC = self.wait_for_poke("C", deadline=deadlineC)
         trial_end = time.time()
@@ -171,15 +171,18 @@ class SocialRewardSession:
         rewarded = pokedC
 
         if pokedC:
+            wait_for_door_clear(self.shared)
             close_door(self.ser) # <- delayed to here until firmware can be changed
             deliver_reward(self.ser, "C", self.valve_time)
         else:
             if self.led_on_time is not None: # phase 4
+                wait_for_door_clear(self.shared)
                 close_door(self.ser) # <- delayed to here until firmware can be changed
-
+                
         set_led(self.ser, "C", False)
 
         # ITI
+
         iti = random.uniform(ITI_MIN, ITI_MAX)
 
         self.results_df.loc[len(self.results_df)] = {
