@@ -195,6 +195,9 @@ class SocialRewardSession:
             "valve_time": valve_time_used
         }
 
+        # wait for door to be fully closed from previous trial
+        wait_for_door_clear(self.shared)
+
         # ITI
         self.run_iti(iti)
 

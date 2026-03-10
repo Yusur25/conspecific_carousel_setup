@@ -62,19 +62,23 @@ class PerformanceGUI:
         rts = results_df.loc[valid, "rt"]
 
         colors = []
-        for _, row in results_df.loc[valid].iterrows():
-            if row["outcome"] == "hit":
-                colors.append("green")
-            elif row["outcome"] == "false_alarm":
-                colors.append("red")
-            elif row["outcome"] == "miss":
-                colors.append("orange")
-            elif row["outcome"] == "correct_rejection":
-                colors.append("blue")
-            else:
-                colors.append("blue")  # fallback
+        if "outcome" in results_df.columns:
+            for outcome in results_df.loc[valid, "outcome"]:
+                if outcome == "hit":
+                    colors.append("green")
+                elif outcome == "false_alarm":
+                    colors.append("red")
+                elif outcome == "miss":
+                    colors.append("orange")
+                elif outcome == "correct_rejection":
+                    colors.append("blue")
+                else:
+                    colors.append("gray")
+        else:
+            colors.append("blue")  # fallback
 
         self.ax_rt.clear()
+        self.ax_rt.plot(trials, rts, color="black", linewidth=1, alpha=0.5)
         self.ax_rt.scatter(trials, rts, c=colors, s=30)
         self.ax_rt.set_xlim(xmin, xmax)
         self.ax_rt.set_ylabel("Reaction time for port C (s)")
@@ -88,7 +92,7 @@ class PerformanceGUI:
         # Task SESSION MODE
         if "reward_available" in results_df.columns:
             self.ax_outcome.set_yticks([0, 1])
-            self.ax_outcome.set_yticklabels(["Unrewarded animal", "Rewarded animal"])
+            self.ax_outcome.set_yticklabels(["Unrewarded", "Rewarded"])
             self.ax_outcome.set_ylabel("Stimulus")
 
             for _, row in results_df.iterrows():

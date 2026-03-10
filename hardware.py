@@ -270,6 +270,10 @@ def move_table_to_position(ser, target_position: int):
 
     if target_position not in TABLE_POSITIONS:
         raise ValueError(f"Unknown table position {target_position}")
+    
+    if target_position == current_table_position:
+        print(f"Table already at position {target_position}, skipping move")
+        return
 
     current_angle = TABLE_POSITIONS[current_table_position]
     target_angle = TABLE_POSITIONS[target_position]
