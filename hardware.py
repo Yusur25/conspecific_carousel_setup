@@ -325,7 +325,7 @@ def wait_for_door_clear(shared: 'SharedSensorState'):
             return True
         time.sleep(0.01)  # avoid busy-wait
 
-def close_door(ser, shared, timeout=5):
+def close_door(ser, shared, door_started=None, timeout=5):
     """
     Close door only after:
     1. Mechanical door confirmed opened
@@ -348,4 +348,9 @@ def close_door(ser, shared, timeout=5):
         return
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
+
+    # Signal that the door has started closing
+    if door_started:
+        door_started.set()
+
 
