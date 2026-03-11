@@ -147,7 +147,9 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
+        door_started = threading.Event()
         threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+        door_started.wait()   # waits until close command is sent
 
         trial_start = time.time()
 
