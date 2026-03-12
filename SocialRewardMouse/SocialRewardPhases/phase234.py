@@ -4,11 +4,11 @@ import random
 import threading
 import numpy as np
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, STOP_EVENT)
+from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, wait_for_door_state, STOP_EVENT)
 
 """script for phases 2,3,4"""
 
-ITI_MIN = 5.0 #seconds
+ITI_MIN = 5.0
 ITI_MAX = 10.0
 
 class SocialRewardSession:
@@ -29,12 +29,17 @@ class SocialRewardSession:
         self.trial_counter = 0
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
-            "trial_num", "port", "trial_start", "trial_end",
+            "trial_num",
+            "port",
+            "trial_start",
+            "trial_end",
             "rt",                    # LED C -> poke C
             "rt_tablehold",          # Door open -> table hold (LED C)
             "rt_dooropen",           # LED A -> door open
             "auto_dooropen",
-            "iti", "reward_triggered", "sampling_time"
+            "reward_triggered",
+            "sampling_time",
+            "iti"
         ])
 
     # ----------------------------
@@ -94,17 +99,16 @@ class SocialRewardSession:
         rt_dooropen = np.nan
         rt_tablehold = np.nan
         sampling_time = np.nan
+        iti = np.nan
         rewarded = False
 
-        print("Trial start")
-
-        rt_dooropen = None
         auto_dooropen = False
 
         if self.require_port_a:
 
             # Port A
             set_led(self.ser, "A", True)
+            print("Waiting for door open...")
             ledA_onset_time = time.time()
             deadlineA = ledA_onset_time + 200  # auto-open after 200 s
 
@@ -148,12 +152,13 @@ class SocialRewardSession:
 
         # require port to be cleared before accepting a new poke
         while self.running and not STOP_EVENT.is_set():
-            st, _ = self.shared.get_port(self.port)
-            if st == "cleared":
+            state, _ = self.shared.get_port(self.port)
+            if state == "cleared":
                 break
             time.sleep(0.005)
         trial_start = time.time()
         ledC_onset_time = trial_start
+        print("Trial start")
         
         # wait_for_door_clear(self.shared)
         # close_door(self.ser) <- delayed from here until firmware can be changed
@@ -180,6 +185,7 @@ class SocialRewardSession:
                 close_door(self.ser) # <- delayed to here until firmware can be changed
                 
         set_led(self.ser, "C", False)
+        print("Trial end")
 
         # ITI
 
@@ -194,12 +200,13 @@ class SocialRewardSession:
             "rt_tablehold": rt_tablehold if rt_tablehold is not None else np.nan,
             "rt_dooropen": rt_dooropen if rt_dooropen is not None else np.nan,
             "auto_dooropen": auto_dooropen,
-            "iti": iti if iti is not None else np.nan,
             "reward_triggered": rewarded if rewarded is not None else np.nan,
-            "sampling_time": sampling_time if sampling_time is not None else np.nan
+            "sampling_time": sampling_time if sampling_time is not None else np.nan,
+            "iti": iti if iti is not None else np.nan
         }
-
-        print("Trial complete")
+        
+        wait_for_door_state(self.shared, target_state="door closed", timeout=None)
+        print("Door closed, ready for next trial")
         print(self.results_df.iloc[-1].to_dict())
         
         self.run_iti(iti)
