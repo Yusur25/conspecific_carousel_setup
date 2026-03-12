@@ -73,7 +73,7 @@ class SharedSensorState:
     def __init__(self):
         self._lock = threading.Lock()
         self.state = {"A": "cleared", "B": "cleared", "C": "cleared",
-                      "doorsensor": "cleared", "table": "cleared", "door": "unknown"}
+                      "doorsensor": "cleared", "table": "cleared", "door": "door closed"}
         self.last_change = {"A": None, "B": None, "C": None,
                             "doorsensor": None, "table": None, "door": None}
 
