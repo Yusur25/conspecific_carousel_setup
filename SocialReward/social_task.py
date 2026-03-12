@@ -147,11 +147,11 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
-        door_started = threading.Event()
-        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
-        door_started.wait()   # waits until close command is sent
+        wait_for_door_clear(self.shared)
 
-        trial_start = time.time()
+        trial_start = time.time() # start timer for led C counter
+
+        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
 
         poked = self.wait_for_poke("C")
 
