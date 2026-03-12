@@ -28,6 +28,7 @@ TABLE_TURN_CCW_270 = 0x31
 TABLE_TURN_CW_270  = 0x32
 DOOR_OPEN  = 0x10
 DOOR_CLOSE = 0x11
+DOOR_DISABLE_INTERLOCK = 0x34
 
 #TABLE LOGIC NEEDS CHANGING
 DEFAULT_TABLE_POSITION = 0
@@ -324,8 +325,15 @@ def wait_for_door_clear(shared: 'SharedSensorState'):
         if state == "cleared":
             return True
         time.sleep(0.01)  # avoid busy-wait
+        
+def disable_door_interlock(ser):
+    """
+    Temporarily disable door interlock while the door is closing.
+    """
+    ser.write(bytes([DOOR_DISABLE_INTERLOCK]))
+    ser.flush()
 
-def close_door(ser, shared, door_started=None, timeout=5):
+def close_door(ser, shared, timeout=5):
     """
     Close door only after:
     1. Mechanical door confirmed opened
@@ -341,16 +349,8 @@ def close_door(ser, shared, door_started=None, timeout=5):
             print("[ERROR] Door failed to open; aborting close.")
             return
 
-
-    # Ensure doorway is clear
-    if not wait_for_door_clear(shared):
-        print("[ERROR] Doorway still blocked; not closing door")
-        return
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
 
-    # Signal that the door has started closing
-    if door_started:
-        door_started.set()
 
 
