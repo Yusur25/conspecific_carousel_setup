@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 class PerformanceGUI:
-    def __init__(self, animal_name="Animal"):
+    def __init__(self, animal_name="Animal", phase_selection="Phase"):
         plt.ion()
 
         self.fig = plt.figure(figsize=(8, 8))
@@ -62,7 +62,7 @@ class PerformanceGUI:
         self.ax_block.set_ylim(0, 100)
         self.ax_block.grid(True, axis="y")
 
-        self.fig.suptitle(f"Performance Summary: {animal_name}", fontsize=14)
+        self.fig.suptitle(f"Performance Summary: {animal_name} | {phase_selection}", fontsize=14)
 
         plt.show(block=False)
 
@@ -76,7 +76,7 @@ class PerformanceGUI:
         # # =========================
         # # Reaction time plot
         # # =========================
-        # valid = results_df["reward_triggered"].notna()
+        # valid = results_df["rt"].notna()
         # trials = results_df.loc[valid, "trial_num"]
         # rts = results_df.loc[valid, "rt"]
 
@@ -141,19 +141,38 @@ class PerformanceGUI:
         # =========================
         # Outcome dots
         # =========================
-        self.ax_outcome.clear()
-        self.ax_outcome.grid(True, axis="x")
-        self.ax_outcome.set_yticks([0, 1, 2])
-        self.ax_outcome.set_yticklabels(["A", "B", "C"])
-        self.ax_outcome.set_ylim(-0.5, 2.5)
-        self.ax_outcome.set_ylabel("Port")
-        self.ax_outcome.set_xlim(xmin, xmax)
-        #self.ax_outcome.set_xlabel("Trial")
 
-        for _, row in results_df.iterrows():
-            y = 1 if row["port"] == "B" else 2 if row["port"] == "C" else 0
-            color = "green" if row["reward_triggered"] else "red"
-            self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
+        if "reward_available" in results_df.columns:
+            # task mode
+            self.ax_outcome.set_yticks([0.5, 1.5])
+            self.ax_outcome.set_yticklabels(["Unrewarded", "Rewarded"])
+            self.ax_outcome.set_ylabel("Stimulus")
+            
+            for _, row in results_df.iterrows():
+                y = 1 if row["reward_available"] else 0
+                outcome = row.get("outcome", None)
+                if outcome == "hit":
+                    color = "green"
+                elif outcome == "miss":
+                    color = "orange"
+                elif outcome == "false_alarm":
+                    color = "red"
+                elif outcome == "correct_rejection":
+                    color = "blue"
+                else:
+                    color = "gray"
+                self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
+
+        elif "reward_triggered" in results_df.columns:
+            # training mode
+            self.ax_outcome.set_yticks([0, 1, 2])
+            self.ax_outcome.set_yticklabels(["A", "B", "C"])
+            self.ax_outcome.set_ylabel("Port")
+            
+            for _, row in results_df.iterrows():
+                y = 1 if row["port"] == "B" else 2 if row["port"] == "C" else 0
+                color = "green" if row["reward_triggered"] else "red"
+                self.ax_outcome.scatter(row["trial_num"], y, c=color, s=40)
 
         # =========================
         # Sampling duration
@@ -194,7 +213,7 @@ class PerformanceGUI:
         # Block performance (10 trials)
         # =========================
         self.ax_block.clear()
-        self.ax_block.set_ylabel("Hit rate (%)")
+        self.ax_block.set_ylabel("Performance (%)")
         self.ax_block.set_xlabel("Trial block (10)")
         self.ax_block.set_ylim(0, 100)
         self.ax_block.grid(True, axis="y")
@@ -208,7 +227,12 @@ class PerformanceGUI:
             if len(block) == 0:
                 continue
 
-            pct = block["reward_triggered"].mean() * 100
+            if "outcome" in results_df.columns:
+                correct = block["outcome"].isin(["hit", "correct_rejection"])
+                pct = correct.mean() * 100
+            else:
+                pct = block["reward_triggered"].mean() * 100
+
             blocks.append(pct)
 
             t_start = block["trial_num"].iloc[0]
