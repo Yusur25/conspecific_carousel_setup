@@ -4,7 +4,7 @@ import random
 import threading
 import numpy as np
 import pandas as pd
-from hardware import set_led, sensor_held, deliver_reward, open_door, close_door, reset_table_to_default, move_table_to_position, wait_for_door_clear, wait_for_door_state, current_table_position, STOP_EVENT
+from hardware import set_led, sensor_held, deliver_reward, open_door, close_door, reset_table_to_default, move_table_to_position, wait_for_door_clear, wait_for_door_and_table_clear, wait_for_door_state, current_table_position, STOP_EVENT, disable_door_interlock
 
 ITI_MIN = 5.0
 ITI_MAX = 10.0
@@ -38,7 +38,7 @@ class SocialTestSession:
             "rt",
             "rt_dooropen",
             "rt_tablehold",
-            "auto_dooropen", # always set to False in social_task
+            "auto_dooropen", # Always set to False in social_task
             "table_position",
             "reward_available",
             "reward_triggered",
@@ -96,6 +96,8 @@ class SocialTestSession:
     # Trial logic
     def run_trial(self):
 
+        # disable_door_interlock(self.ser)
+
         trial_start = None
         trial_end = None
         rt = np.nan
@@ -105,7 +107,7 @@ class SocialTestSession:
         iti = np.nan
         poked = False
 
-        reset_table_to_default(self.ser) # the box the session starts with (which can be any box) = the default box
+        reset_table_to_default(self.ser) # the box the session starts with (which can be any box) becomes the default box
         self.wait(9) # wait for table to return to default position before the next command
 
         # Choose table position
@@ -114,7 +116,7 @@ class SocialTestSession:
 
         table_position = self.position_block.pop()
         print(f"Current position: {current_table_position}, Target position: {table_position}")
-        
+
         move_table_to_position(self.ser, table_position)
         print("Table command sent")
         self.wait(6) # wait for table to turn to target position before the next command
@@ -135,7 +137,10 @@ class SocialTestSession:
             time.sleep(0.01)
         rt_dooropen = time.time() - ledA_onset_time
         set_led(self.ser, "A", False)
-        open_door(self.ser)
+        #open_door(self.ser)
+        threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
+        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        print("Door opened, ready for trial")
         door_open_time = time.time()
 
         # Table hold (2 seconds minimum)
@@ -157,24 +162,26 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
-        #threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
+        # threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
         trial_start = time.time()
         print("Trial start")
 
         poked = self.wait_for_poke("C")
-        wait_for_door_clear(self.shared)
-        close_door(self.ser) # <- delayed to here until firmware can be changed
-        trial_end = time.time()
-
-        rt = (trial_end - trial_start) if poked else 5
-        print("Trial end")
-
-        # Reward delivery
         if poked and reward_available:
             deliver_reward(self.ser, "C", self.valve_time)
 
         set_led(self.ser, "C", False)
+        print("Trial end")
+        
+        wait_for_door_and_table_clear(self.shared)
+        #close_door(self.ser) # <- Delayed to here until firmware can be changed
+        threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
+        trial_end = time.time()
+
+        rt = (trial_end - trial_start) if poked else 5
+
+        # Reward delivery
 
         # ITI
         iti = random.uniform(ITI_MIN, ITI_MAX)
@@ -237,8 +244,8 @@ class SocialTestSession:
             if state == "triggered":
                 start = time.time()
                 while self.running and not STOP_EVENT.is_set():
-                    state_now, _ = self.shared.get_port("table")
-                    if state_now != "triggered":
+                    state, _ = self.shared.get_port("table")
+                    if state != "triggered":
                         break
                     time.sleep(0.001)
                 sampling_time = time.time() - start
