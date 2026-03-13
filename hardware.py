@@ -1,6 +1,7 @@
 # hardware.py
 import threading
 import time
+import queue
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Tuple
@@ -44,6 +45,7 @@ current_table_position = DEFAULT_TABLE_POSITION
 
 SENSOR_HOLD_TIME = 0.1
 
+SERIAL_QUEUE = queue.Queue(maxsize=10000)
 STOP_EVENT = threading.Event()
 # ---------------------------
 # Thread-safe sensor state
@@ -107,30 +109,17 @@ class SharedSensorState:
 # ---------------------------
 # Serial listener (background)
 # ---------------------------
-class SerialListener(threading.Thread):
-    def __init__(self, ser: serial.Serial, shared: SharedSensorState, event_log_path: str,
-                 table_csv_path: str = None, door_csv_path: str = None):
+
+
+# separating the threads into 2 classes -- one that reads the messages and one that writes the results
+# can also consider changing the way the results are written by avoiding always calling open(***.txt file) before writing
+
+class SerialReader(threading.Thread):
+    def __init__(self, ser, q):
         super().__init__(daemon=True)
         self.ser = ser
-        self.shared = shared
-        self.event_log_path = event_log_path
-        self.table_event_start = None
-        self.doorsensor_event_start = None
-        self.table_csv_path = table_csv_path
-        self.doorsensor_csv_path = door_csv_path
-
-        self.session_start = time.time()  # track session start
-
-        # write header once if file doesn't exist
-        if not os.path.exists(self.event_log_path):
-            with open(self.event_log_path, "w", encoding="utf-8") as f:
-                f.write("time_str,seconds_since_start,port,state,raw\n")
-        if self.table_csv_path and not os.path.exists(self.table_csv_path):
-            with open(self.table_csv_path, "w", encoding="utf-8") as f:
-                f.write("start,end\n")
-        if self.doorsensor_csv_path and not os.path.exists(self.doorsensor_csv_path):
-            with open(self.doorsensor_csv_path, "w", encoding="utf-8") as f:
-                f.write("start,end\n")
+        self.q = q 
+        self.session_start = time.time()
 
     def run(self):
         while not STOP_EVENT.is_set():
@@ -144,51 +133,164 @@ class SerialListener(threading.Thread):
             if not line:
                 continue
 
-            msg = line.decode("ascii", errors="ignore").strip()
-            if not msg:
-                continue
-
-            msg_l = msg.lower()
-
             ts = now()
             seconds_since_start = time.time() - self.session_start
 
+            # comment this in to see everything the serialreader is reading
+            #print(repr(line))
 
-            # Handle door state messages
-            if msg_l in ("door opened", "door closed", "door moving"):
+            try:
+                self.q.put_nowait((ts, seconds_since_start, line))
+            except queue.Full:
+                print("[ERROR] Serial queue full, dropping message")
+
+class SerialProcessor(threading.Thread):
+    def __init__(self, q, shared, event_log_path, table_csv_path=None, door_csv_path=None):
+        super().__init__(daemon=True)
+        self.q = q 
+        self.shared = shared
+        self.event_log_path = event_log_path 
+        self.table_event_start = None
+        self.doorsensor_event_start = None
+        self.table_csv_path = table_csv_path
+        self.doorsensor_csv_path = door_csv_path
+
+    def run(self):
+        while not STOP_EVENT.is_set():
+            ts, seconds_since_start, line = self.q.get(timeout=0.1)
+        except queue.Empty:
+            continue 
+
+        msg = line.decode("ascii", errors="ignore").strip()
+        if not msg:
+            continue
+
+        msg_l = msg.lower()
+
+        if msg_l in ("door opened", "door closed", "door moving"):
+            prev_state, _ = self.shared.get_port("door")
+            if prev_state != msg_l:
                 self.shared.update("door", msg_l, ts)
-
                 with open(self.event_log_path, "a", encoding="utf-8") as f:
                     f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},door,{msg_l},{msg}\n")
+            continue
 
-                continue
+        port, state = parse_beambreak(msg)
+        if port is None:
+            print(f"[WARNING] Unparsed serial message: {msg!r}")
+            continue
+
+        prev_state, _ = self.shared.get_port(port)
+        if prev_state == state:
+            print(f"[WARNING] Duplicate state for {port}: {state} raw={msg!r}")
+            continue
+
+        self.shared.update(port, state, ts)
+
+        with open(self.event_log_path, "a", encoding="utf-8") as f:
+            f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},{port},{state},{msg}\n")
+
+        if port == "table" and self.table_csv_path:
+            if state == "triggered":
+                self.table_event_start = seconds_since_start
+            elif state == "cleared" and self.table_event_start is not None:
+                with open(self.table_csv_path, "a", encoding="utf-8") as f:
+                    f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
+                self.table_event_start = None
+
+        if port == "doorsensor" and self.doorsensor_csv_path:
+            if state == "triggered":
+                self.doorsensor_event_start = seconds_since_start
+            elif state == "cleared" and self.doorsensor_event_start is not None:
+                with open(self.doorsensor_csv_path, "a", encoding="utf-8") as f:
+                    f.write(f"{self.doorsensor_event_start:.3f},{seconds_since_start:.3f}\n")
+                self.doorsensor_event_start = None
+        
 
 
-            # Handle beambreak sensors
-            port, state = parse_beambreak(msg)
-            if port is None:
-                continue
 
-            self.shared.update(port, state, ts)
+# class SerialListener(threading.Thread):
+#     def __init__(self, ser: serial.Serial, shared: SharedSensorState, event_log_path: str,
+#                  table_csv_path: str = None, door_csv_path: str = None):
+#         super().__init__(daemon=True)
+#         self.ser = ser
+#         self.shared = shared
+#         self.event_log_path = event_log_path
+#         self.table_event_start = None
+#         self.doorsensor_event_start = None
+#         self.table_csv_path = table_csv_path
+#         self.doorsensor_csv_path = door_csv_path
 
-            with open(self.event_log_path, "a", encoding="utf-8") as f:
-                f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},{port},{state},{msg}\n")
+#         self.session_start = time.time()  # track session start
 
-            if port == "table" and self.table_csv_path:
-                if state == "triggered":
-                    self.table_event_start = seconds_since_start
-                elif state == "cleared" and self.table_event_start is not None:
-                    with open(self.table_csv_path, "a", encoding="utf-8") as f:
-                        f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
-                    self.table_event_start = None
+#         # write header once if file doesn't exist
+#         if not os.path.exists(self.event_log_path):
+#             with open(self.event_log_path, "w", encoding="utf-8") as f:
+#                 f.write("time_str,seconds_since_start,port,state,raw\n")
+#         if self.table_csv_path and not os.path.exists(self.table_csv_path):
+#             with open(self.table_csv_path, "w", encoding="utf-8") as f:
+#                 f.write("start,end\n")
+#         if self.doorsensor_csv_path and not os.path.exists(self.doorsensor_csv_path):
+#             with open(self.doorsensor_csv_path, "w", encoding="utf-8") as f:
+#                 f.write("start,end\n")
 
-            if port == "doorsensor" and self.doorsensor_csv_path:
-                if state == "triggered":
-                    self.doorsensor_event_start = seconds_since_start
-                elif state == "cleared" and self.doorsensor_event_start is not None:
-                    with open(self.doorsensor_csv_path, "a", encoding="utf-8") as f:
-                        f.write(f"{self.doorsensor_event_start:.3f},{seconds_since_start:.3f}\n")
-                    self.doorsensor_event_start = None
+#     def run(self):
+#         while not STOP_EVENT.is_set():
+#             try:
+#                 line = self.ser.readline()
+#             except Exception:
+#                 # if serial dies, stop the experiment
+#                 STOP_EVENT.is_set()
+#                 break
+
+#             if not line:
+#                 continue
+
+#             msg = line.decode("ascii", errors="ignore").strip()
+#             if not msg:
+#                 continue
+
+#             msg_l = msg.lower()
+
+#             ts = now()
+#             seconds_since_start = time.time() - self.session_start
+
+
+#             # Handle door state messages
+#             if msg_l in ("door opened", "door closed", "door moving"):
+#                 self.shared.update("door", msg_l, ts)
+
+#                 with open(self.event_log_path, "a", encoding="utf-8") as f:
+#                     f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},door,{msg_l},{msg}\n")
+
+#                 continue
+
+
+#             # Handle beambreak sensors
+#             port, state = parse_beambreak(msg)
+#             if port is None:
+#                 continue
+
+#             self.shared.update(port, state, ts)
+
+#             with open(self.event_log_path, "a", encoding="utf-8") as f:
+#                 f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},{port},{state},{msg}\n")
+
+#             if port == "table" and self.table_csv_path:
+#                 if state == "triggered":
+#                     self.table_event_start = seconds_since_start
+#                 elif state == "cleared" and self.table_event_start is not None:
+#                     with open(self.table_csv_path, "a", encoding="utf-8") as f:
+#                         f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
+#                     self.table_event_start = None
+
+#             if port == "doorsensor" and self.doorsensor_csv_path:
+#                 if state == "triggered":
+#                     self.doorsensor_event_start = seconds_since_start
+#                 elif state == "cleared" and self.doorsensor_event_start is not None:
+#                     with open(self.doorsensor_csv_path, "a", encoding="utf-8") as f:
+#                         f.write(f"{self.doorsensor_event_start:.3f},{seconds_since_start:.3f}\n")
+#                     self.doorsensor_event_start = None
 
 #-----------------------------
 # Hardware control functions
