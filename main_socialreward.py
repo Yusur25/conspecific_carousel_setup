@@ -1,6 +1,7 @@
 import serial
 import argparse
 import time
+import queue
 import signal
 import os
 from datetime import datetime
@@ -58,13 +59,24 @@ def main():
         return
 
     # shared state + listener + GUI (for all phases)
+
+    # code edited to account for SerialReader + SerialProcessor
     shared = SharedSensorState()
-    listener = SerialListener(
-        ser,
-        shared,
-        event_log_path=sensor_log,
-    )
-    listener.start()
+    q = queue.Queue(maxsize=10000)
+
+    reader = SerialReader(ser, q)
+    processor = SerialProcessor(q, shared, event_log_path=sensor_log)
+
+    reader.start()
+    processor.start()
+
+    # original code below
+    # listener = SerialListener(
+    #     ser,
+    #     shared,
+    #     event_log_path=sensor_log,
+    # )
+    # listener.start()
 
     sensor_gui = SensorGUI()
     perf_gui = PerformanceGUI(animal_name=animal)
