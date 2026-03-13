@@ -2,7 +2,7 @@ import time
 import random
 import threading
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, incremental_reward, open_door, close_door, wait_for_door_clear, STOP_EVENT)
+from hardware import (set_led, sensor_held, deliver_reward, incremental_reward, open_door, close_door, wait_for_door_clear, wait_for_door_state, STOP_EVENT)
 
 """script for phases 2,3,4"""
 
@@ -163,6 +163,8 @@ class SocialRewardSession:
                 break
             time.sleep(0.005)
         
+        wait_for_door_clear(self.shared)
+        
         trial_start = time.time()
         if self.led_on_time is None:
             deadline = None
@@ -196,7 +198,7 @@ class SocialRewardSession:
         }
 
         # wait for door to be fully closed from previous trial
-        wait_for_door_clear(self.shared)
+        wait_for_door_state(self.shared, "door closed")
 
         # ITI
         self.run_iti(iti)

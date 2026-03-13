@@ -2,10 +2,10 @@ import time
 import random
 import threading
 import pandas as pd
-from hardware import set_led, sensor_held,deliver_reward, STOP_EVENT, open_door, close_door, reset_table_to_default, move_table_to_position, current_table_position, wait_for_door_clear
+from hardware import set_led, sensor_held, incremental_reward, STOP_EVENT, open_door, close_door, reset_table_to_default, move_table_to_position, current_table_position, wait_for_door_clear, wait_for_door_state
 
 ITI_MIN = 5.0
-ITI_MAX = 10.0
+ITI_MAX = 7.0
 
 
 class SocialTestSession:
@@ -23,6 +23,7 @@ class SocialTestSession:
         self.running = False
 
         self.trial_counter = 0
+        self.reward_count = 0
 
         # table positions
         self.rewarded_position = 1
@@ -37,7 +38,8 @@ class SocialTestSession:
             "trial_end",
             "rt",
             "iti",
-            "sampling_time"
+            "sampling_time",
+            "valve_time"
         ])
 
     # Session control
@@ -92,10 +94,11 @@ class SocialTestSession:
         trial_start = None
         trial_end = None
         sampling_time = 0
+        valve_time_used = None
         rt = None
 
         reset_table_to_default(self.ser)
-        self.wait(7) # wait for table to go back to default position
+        self.wait(8) # wait for table to go back to default position
 
         # Choose table position
         if not self.position_block:
@@ -147,19 +150,23 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
+        wait_for_door_clear(self.shared)
+
         trial_start = time.time()
 
         threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+
 
         poked = self.wait_for_poke("C")
 
         trial_end = time.time()
 
-        rt = (trial_end - trial_start) if poked else 5
+        rt = (trial_end - trial_start) if poked else 10
 
         # Reward delivery
         if poked and reward_available:
-            deliver_reward(self.ser, "C", self.valve_time)
+            valve_time_used = incremental_reward(self.ser, "C", self.valve_time, self.reward_count)
+            self.reward_count += 1
 
         set_led(self.ser, "C", False)
 
@@ -186,11 +193,12 @@ class SocialTestSession:
             "trial_end": trial_end,
             "rt": rt,
             "iti": iti,
-            "sampling_time": sampling_time
+            "sampling_time": sampling_time,
+            "valve_time": valve_time_used
         }
 
         # wait for door to be fully closed from previous trial
-        wait_for_door_clear(self.shared)
+        wait_for_door_state(self.shared, "door closed")
 
         print("Trial complete")
 
@@ -199,7 +207,7 @@ class SocialTestSession:
     # --------------------------
 
     def wait_for_poke(self, port):
-        deadline = time.time() + 5
+        deadline = time.time() + 10
         while time.time() < deadline:
             if not self.running or STOP_EVENT.is_set():
                 break
