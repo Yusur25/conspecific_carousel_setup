@@ -1,11 +1,12 @@
 # main_socialreward.py
 import serial
+import queue
 import argparse
 import time
 import signal
 import os
 from datetime import datetime
-from hardware import SharedSensorState, SerialListener, STOP_EVENT, shutdown_outputs
+from hardware import SharedSensorState, SerialReader, SerialProcessor, STOP_EVENT, shutdown_outputs
 from gui import SensorGUI, PerformanceGUI
 from SocialRewardPhases.social_task import SocialTestSession
 from SocialRewardPhases.phase234 import SocialRewardSession
@@ -13,7 +14,6 @@ from SocialRewardPhases.phase1 import Phase1Session
 
 """All phases of social reward training in one script 
 
-# Phase 1: port C LED -> rat pokes -> reward
 # Phase 2: door automatically opens -> rat holds table sensor for 100 ms -> port C LED -> rat pokes -> reward
 # Phase 3a: port A LED -> rat pokes -> door opens -> rat hold table sensor for 100 ms -> port C LED -> rat pokes -> reward
 # Phase 3b: port A LED -> rat pokes -> door opens -> rat hold table sensor for 100-2000 ms -> port C LED -> rat pokes -> reward
@@ -21,7 +21,7 @@ from SocialRewardPhases.phase1 import Phase1Session
 
 """
 
-valve_time = 0.30  # <- change based on calibration, aim for 10-15 ul per poke
+valve_time = 0.30  # <- Change based on calibration, aim for 10-15 ul per poke
 
 def handle_sigint(sig, frame):
     STOP_EVENT.set()
@@ -41,6 +41,7 @@ def main():
 
     trial_csv = os.path.join(BASE_SAVE_DIR, "trials.csv")
     sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
+
     perf_fig_path = os.path.join(BASE_SAVE_DIR, "performance.png")
 
     parser = argparse.ArgumentParser()
@@ -48,7 +49,7 @@ def main():
     parser.add_argument("--baud", type=int, default=57600)
     args = parser.parse_args()
 
-    # initialise serial
+    # Initialise serial
     try:
         ser = serial.Serial(args.port, baudrate=args.baud, timeout=0.05)
         time.sleep(2)
@@ -56,14 +57,27 @@ def main():
         print(f"Cannot open serial: {e}")
         return
 
-    # shared state + listener + GUI (for all phases)
+    # # Shared state + listener + GUI (for all phases)
+    # shared = SharedSensorState()
+    # listener = SerialListener(
+    #     ser,
+    #     shared,
+    #     event_log_path=sensor_log,
+    # )
+    # listener.start()
+
     shared = SharedSensorState()
-    listener = SerialListener(
-        ser,
+    q = queue.Queue()
+
+    reader = SerialReader(ser, q)
+    processor = SerialProcessor(
+        q,
         shared,
-        event_log_path=sensor_log,
+        event_log_path=sensor_log
     )
-    listener.start()
+
+    reader.start()
+    processor.start()
 
     sensor_gui = SensorGUI()
     perf_gui = PerformanceGUI(animal_name=animal, phase_selection=phase)
@@ -169,7 +183,10 @@ def main():
             session.stop()
             session.results_df.to_csv(trial_csv, index=False)
             print(f"[INFO] Trials saved: {trial_csv}")
-        listener.join(timeout=1)
+        #listener.join(timeout=1)
+        reader.join(timeout=1)
+        processor.join(timeout=1)
+
         shutdown_outputs(ser)
         ser.close()
         perf_gui.close(save_path=perf_fig_path)
