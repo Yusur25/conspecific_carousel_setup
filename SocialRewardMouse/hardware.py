@@ -183,7 +183,7 @@ class SerialProcessor(threading.Thread):
             prev_state, _ = self.shared.get_port(port)
             if prev_state == state:
                 print(f"[WARNING] Duplicate state for {port}: {state} raw={msg!r}")
-                continue
+                # continue <- Commented out so that any duplicate is also saved
 
             self.shared.update(port, state, ts)
 
@@ -330,17 +330,64 @@ def wait_for_door_state(shared: SharedSensorState, target_state: str, timeout=No
 
 def wait_for_door_clear(shared: 'SharedSensorState'):
     """
-    Wait until the door sensor is cleared
-    shared: instance of SharedSensorState tracking snsr_door
+    Wait until the door sensor is cleared for at least 100 ms
     """
+    clear_start = None
     while True:
         if STOP_EVENT.is_set():
             return False
         state, _ = shared.get_port("doorsensor")
         if state == "cleared":
-            return True
+            if clear_start is None:
+                clear_start = time.time()
+            if time.time() - clear_start >= 0.1:  # 100 ms
+                return True
+        else:
+            clear_start = None  # Reset if state not cleared
         time.sleep(0.01)
-        
+
+def wait_for_table_clear(shared: 'SharedSensorState'):
+    """
+    Wait until the table sensor is cleared for at least 100 ms
+    """
+    clear_start = None
+    while True:
+        if STOP_EVENT.is_set():
+            return False
+        state, _ = shared.get_port("table")
+        if state == "cleared":
+            if clear_start is None:
+                clear_start = time.time()
+            if time.time() - clear_start >= 0.1:  # 100 ms
+                return True
+        else:
+            clear_start = None  # Reset if state not cleared
+        time.sleep(0.01)
+
+def wait_for_door_and_table_clear(shared: 'SharedSensorState'):
+    """
+    Wait until BOTH door and table sensors are cleared
+    continuously for at least 100 ms.
+    """
+    clear_start = None
+    while True:
+
+        if STOP_EVENT.is_set():
+            return False
+        door_state, _ = shared.get_port("doorsensor")
+        table_state, _ = shared.get_port("table")
+
+        # print(door_state, table_state)
+
+        if door_state == "cleared" and table_state == "cleared":
+            if clear_start is None:
+                clear_start = time.time()
+            if time.time() - clear_start >= 0.1:
+                return True
+        else:
+            clear_start = None
+        time.sleep(0.01)
+
 def disable_door_interlock(ser):
     """
     Temporarily disable door interlock while the door is closing.
