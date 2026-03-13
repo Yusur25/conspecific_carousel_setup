@@ -4,9 +4,7 @@ import random
 import threading
 import numpy as np
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, wait_for_door_state, STOP_EVENT)
-
-"""script for phases 2,3,4"""
+from hardware import (set_led, sensor_held, deliver_reward, open_door, close_door, wait_for_door_clear, wait_for_door_and_table_clear, wait_for_door_state, STOP_EVENT, disable_door_interlock)
 
 ITI_MIN = 5.0
 ITI_MAX = 10.0
@@ -48,7 +46,7 @@ class SocialRewardSession:
 
     def start(self):
         if self.running:
-            return  # already running
+            return  # Already running
 
         self.running = True
         self.thread = threading.Thread(
@@ -87,8 +85,10 @@ class SocialRewardSession:
         print("[INFO] Session ended")
 
     def run_trial(self):
+
+        # disable_door_interlock(self.ser)
         
-        # define required table hold for the trial
+        # Define required table hold for the trial
         if callable(self.table_hold):
             required_hold = self.table_hold(self)
         else:
@@ -112,7 +112,7 @@ class SocialRewardSession:
             ledA_onset_time = time.time()
             deadlineA = ledA_onset_time + 200  # auto-open after 200 s
 
-            # require port to be cleared before accepting a new poke
+            # Require port to be cleared before accepting a new poke
             while self.running and not STOP_EVENT.is_set():
                 st, _ = self.shared.get_port("A")
                 if st == "cleared":
@@ -130,9 +130,11 @@ class SocialRewardSession:
 
             set_led(self.ser, "A", False)
 
-        open_door(self.ser)
+        # open_door(self.ser)
+        threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
+        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        print("Door opened, ready for trial")
         door_open_time = time.time()
-        rt_tablehold = None
 
         # Table hold
         print("Waiting for table hold...")
@@ -150,7 +152,7 @@ class SocialRewardSession:
         # Port C
         set_led(self.ser, "C", True)
 
-        # require port to be cleared before accepting a new poke
+        # Require port to be cleared before accepting a new poke
         while self.running and not STOP_EVENT.is_set():
             state, _ = self.shared.get_port(self.port)
             if state == "cleared":
@@ -171,21 +173,22 @@ class SocialRewardSession:
         # threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
         pokedC = self.wait_for_poke("C", deadline=deadlineC)
+        set_led(self.ser, "C", False)
         trial_end = time.time()
+        print("Trial end")
         rt = (trial_end - trial_start) if pokedC else self.led_on_time
         rewarded = pokedC
 
         if pokedC:
-            wait_for_door_clear(self.shared)
-            close_door(self.ser) # <- delayed to here until firmware can be changed
             deliver_reward(self.ser, "C", self.valve_time)
+            wait_for_door_and_table_clear(self.shared)
+            # close_door(self.ser) # <- Delayed to here until firmware can be changed
+            threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
         else:
-            if self.led_on_time is not None: # phase 4
-                wait_for_door_clear(self.shared)
-                close_door(self.ser) # <- delayed to here until firmware can be changed
-                
-        set_led(self.ser, "C", False)
-        print("Trial end")
+            if self.led_on_time is not None: # Phase 4
+                wait_for_door_and_table_clear(self.shared)
+                # close_door(self.ser) # <- Delayed to here until firmware can be changed
+                threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
         # ITI
 
@@ -242,7 +245,7 @@ class SocialRewardSession:
                 sampling_time = time.time() - start
                 return sampling_time
             time.sleep(0.001)
-        return 0  # never triggered
+        return 0  # Never triggered
 
     def run_iti(self, iti=None):
         if iti is None:
