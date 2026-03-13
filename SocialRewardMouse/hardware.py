@@ -1,6 +1,7 @@
 # hardware.py
 import threading
 import time
+import queue
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Tuple
@@ -32,8 +33,9 @@ DOOR_DISABLE_INTERLOCK = 0x34
 
 DEFAULT_TABLE_POSITION = 0
 
+# Position definitions (in 45° steps from default)
 TABLE_POSITIONS = {
-    0: 0,
+    0: 0,   # default / home
     1: 90,
     2: 180,
     3: 270,
@@ -43,7 +45,9 @@ current_table_position = DEFAULT_TABLE_POSITION
 
 SENSOR_HOLD_TIME = 0.1
 
+SERIAL_QUEUE = queue.Queue(maxsize=10000)
 STOP_EVENT = threading.Event()
+
 # ---------------------------
 # Thread-safe sensor state
 # ---------------------------
@@ -71,10 +75,8 @@ class SharedSensorState:
     """
     def __init__(self):
         self._lock = threading.Lock()
-        self.state = {"A": "cleared", "B": "cleared", "C": "cleared",
-                      "doorsensor": "cleared", "table": "cleared", "door": "unknown"}
-        self.last_change = {"A": None, "B": None, "C": None,
-                            "doorsensor": None, "table": None, "door": None}
+        self.state = {"A": "cleared", "B": "cleared", "C": "cleared", "doorsensor": "cleared", "table": "table stopped", "door": "door closed"}
+        self.last_change = {"A": None, "B": None, "C": None, "doorsensor": None, "table": None, "door": None}
 
     def update(self, port: str, state: str, ts: datetime) -> None:
         with self._lock:
@@ -106,42 +108,58 @@ class SharedSensorState:
 # Serial listener (background)
 # ---------------------------
 
-class SerialListener(threading.Thread):
-    def __init__(self, ser: serial.Serial, shared: SharedSensorState, event_log_path: str,
-                 table_csv_path: str = None, door_csv_path: str = None):
+# Separating the threads into 2 classes -- one that reads the messages and one that writes the results
+# Can also consider changing the way the results are written by avoiding always calling open(***.txt file) before writing
+
+class SerialReader(threading.Thread):
+    def __init__(self, ser, q):
         super().__init__(daemon=True)
         self.ser = ser
-        self.shared = shared
-        self.event_log_path = event_log_path
-        self.table_event_start = None
-        self.doorsensor_event_start = None
-        self.table_csv_path = table_csv_path
-        self.doorsensor_csv_path = door_csv_path
-
-        self.session_start = time.time()  # track session start
-
-        # write header once if file doesn't exist
-        if not os.path.exists(self.event_log_path):
-            with open(self.event_log_path, "w", encoding="utf-8") as f:
-                f.write("time_str,seconds_since_start,port,state,raw\n")
-        if self.table_csv_path and not os.path.exists(self.table_csv_path):
-            with open(self.table_csv_path, "w", encoding="utf-8") as f:
-                f.write("start,end\n")
-        if self.doorsensor_csv_path and not os.path.exists(self.doorsensor_csv_path):
-            with open(self.doorsensor_csv_path, "w", encoding="utf-8") as f:
-                f.write("start,end\n")
+        self.q = q 
+        self.session_start = time.time()
 
     def run(self):
         while not STOP_EVENT.is_set():
             try:
                 line = self.ser.readline()
             except Exception:
-                # if serial dies, stop the experiment
+                # If serial dies, stop the experiment
                 STOP_EVENT.is_set()
                 break
 
             if not line:
                 continue
+
+            ts = now()
+            seconds_since_start = time.time() - self.session_start
+
+            # Comment this in to see everything the serialreader is reading
+            #print(repr(line))
+
+            try:
+                self.q.put_nowait((ts, seconds_since_start, line))
+            except queue.Full:
+                print("[ERROR] Serial queue full, dropping message")
+
+class SerialProcessor(threading.Thread):
+    def __init__(self, q, shared, event_log_path, doorsensor_csv_path=None, table_csv_path=None, door_csv_path=None):
+        super().__init__(daemon=True)
+        self.q = q 
+        self.shared = shared
+        self.event_log_path = event_log_path 
+        self.doorsensor_event_start = None
+        self.table_event_start = None
+        self.door_event_start = None
+        self.doorsensor_csv_path = doorsensor_csv_path
+        self.table_csv_path = table_csv_path
+        self.door_csv_path = door_csv_path
+
+    def run(self):
+        while not STOP_EVENT.is_set():
+            try:
+                ts, seconds_since_start, line = self.q.get(timeout=0.1)
+            except queue.Empty:
+                continue 
 
             msg = line.decode("ascii", errors="ignore").strip()
             if not msg:
@@ -149,36 +167,28 @@ class SerialListener(threading.Thread):
 
             msg_l = msg.lower()
 
-            ts = now()
-            seconds_since_start = time.time() - self.session_start
-
-
-            # Handle door state messages
             if msg_l in ("door opened", "door closed", "door moving"):
-                self.shared.update("door", msg_l, ts)
-
-                with open(self.event_log_path, "a", encoding="utf-8") as f:
-                    f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},door,{msg_l},{msg}\n")
-
+                prev_state, _ = self.shared.get_port("door")
+                if prev_state != msg_l:
+                    self.shared.update("door", msg_l, ts)
+                    with open(self.event_log_path, "a", encoding="utf-8") as f:
+                        f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},door,{msg_l},{msg}\n")
                 continue
 
-            # Handle beambreak sensors
             port, state = parse_beambreak(msg)
             if port is None:
+                print(f"[WARNING] Unparsed serial message: {msg!r}")
+                continue
+
+            prev_state, _ = self.shared.get_port(port)
+            if prev_state == state:
+                print(f"[WARNING] Duplicate state for {port}: {state} raw={msg!r}")
                 continue
 
             self.shared.update(port, state, ts)
 
             with open(self.event_log_path, "a", encoding="utf-8") as f:
                 f.write(f"{ts.strftime('%H:%M:%S.%f')[:-3]},{seconds_since_start:.3f},{port},{state},{msg}\n")
-
-            if port == "table" and self.table_csv_path:
-                if state == "triggered":
-                    self.table_event_start = seconds_since_start
-                elif state == "cleared" and self.table_event_start is not None:
-                    with open(self.table_csv_path, "a", encoding="utf-8") as f:
-                        f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
-                    self.table_event_start = None
 
             if port == "doorsensor" and self.doorsensor_csv_path:
                 if state == "triggered":
@@ -187,6 +197,14 @@ class SerialListener(threading.Thread):
                     with open(self.doorsensor_csv_path, "a", encoding="utf-8") as f:
                         f.write(f"{self.doorsensor_event_start:.3f},{seconds_since_start:.3f}\n")
                     self.doorsensor_event_start = None
+            
+            if port == "table" and self.table_csv_path:
+                if state == "triggered":
+                    self.table_event_start = seconds_since_start
+                elif state == "cleared" and self.table_event_start is not None:
+                    with open(self.table_csv_path, "a", encoding="utf-8") as f:
+                        f.write(f"{self.table_event_start:.3f},{seconds_since_start:.3f}\n")
+                    self.table_event_start = None
 
 #-----------------------------
 # Hardware control functions
@@ -220,6 +238,7 @@ def set_led(ser, port, on):
     ser.write(bytes([cmds["led_on"] if on else cmds["led_off"]]))
     ser.flush()
 
+# Led has to be held for 0.1 seconds to count as a valid poke
 def sensor_held(shared: SharedSensorState, port: str) -> bool:
     start = time.time()
     while time.time() - start < SENSOR_HOLD_TIME:
@@ -236,19 +255,19 @@ def shutdown_outputs(ser):
         ser.write(bytes([COMMANDS[p]["led_off"], COMMANDS[p]["valve_off"]]))
     ser.flush()
 
+
 def turn_table_degrees(ser, delta_degrees: int):
     if delta_degrees == 0:
         return
-
-    # Normalize to -270 to +270
+    
     delta = delta_degrees % 360
     if delta > 180:
-       delta -= 360  # choose shortest path
+       delta -= 360
 
     direction = "CW" if delta > 0 else "CCW"
     angle = abs(delta)
 
-    print(f"Turning {direction} {angle} degrees")
+    print(f"[DEBUG] Turning {direction} {angle} degrees")
 
     if angle == 90:
         cmd = TABLE_TURN_CW_90 if delta > 0 else TABLE_TURN_CCW_90
@@ -311,7 +330,7 @@ def wait_for_door_state(shared: SharedSensorState, target_state: str, timeout=No
 
 def wait_for_door_clear(shared: 'SharedSensorState'):
     """
-    Wait until the door sensor is cleared (rat has left the doorway).
+    Wait until the door sensor is cleared
     shared: instance of SharedSensorState tracking snsr_door
     """
     while True:
@@ -320,8 +339,8 @@ def wait_for_door_clear(shared: 'SharedSensorState'):
         state, _ = shared.get_port("doorsensor")
         if state == "cleared":
             return True
-        time.sleep(0.01)  # avoid busy-wait
-
+        time.sleep(0.01)
+        
 def disable_door_interlock(ser):
     """
     Temporarily disable door interlock while the door is closing.
