@@ -31,17 +31,17 @@ signal.signal(signal.SIGINT, handle_sigint)
 def main():
     # --- Base folder for all outputs ---
     animal = input("Enter animal name/ID: ").strip() or "unknown"
+    session_n = input("Enter session number for the animal today: ").strip() or "1"
+    phase = input("Which phase? (1/2/3a/3b/4/task): ").strip()
     date_str = datetime.now().strftime("%Y-%m-%d")
 
-    BASE_SAVE_DIR = os.path.join("SocialRewardData", f"{animal}_{date_str}")
+    BASE_SAVE_DIR = os.path.join("SocialRewardData", f"{animal}_{session_n}_{phase}_{date_str}")
     os.makedirs(BASE_SAVE_DIR, exist_ok=True)
     print(f"[INFO] Saving all files to: {BASE_SAVE_DIR}")
 
     trial_csv = os.path.join(BASE_SAVE_DIR, "trials.csv")
     sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
     perf_fig_path = os.path.join(BASE_SAVE_DIR, "performance.png")
-
-    phase = input("Which phase? (1/2/3a/3b/4/task): ").strip()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
