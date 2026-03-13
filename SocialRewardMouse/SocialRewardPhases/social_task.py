@@ -1,12 +1,13 @@
+# social_task.py
 import time
 import random
 import threading
+import numpy as np
 import pandas as pd
-from hardware import set_led, sensor_held,deliver_reward, STOP_EVENT, open_door, close_door, reset_table_to_default, move_table_to_position, current_table_position, wait_for_door_clear
+from hardware import set_led, sensor_held, deliver_reward, open_door, close_door, reset_table_to_default, move_table_to_position, wait_for_door_clear, wait_for_door_state, current_table_position, STOP_EVENT
 
 ITI_MIN = 5.0
 ITI_MAX = 10.0
-
 
 class SocialTestSession:
 
@@ -23,21 +24,27 @@ class SocialTestSession:
         self.running = False
 
         self.trial_counter = 0
+        self.port = "C"
 
-        # table positions
+        # Table positions
         self.rewarded_position = 1
         self.unrewarded_position = 3
 
         self.results_df = pd.DataFrame(columns=[
             "trial_num",
-            "table_position",
-            "reward_available",
-            "outcome",
+            "port",
             "trial_start",
             "trial_end",
             "rt",
+            "rt_dooropen",
+            "rt_tablehold",
+            "auto_dooropen", # always set to False in social_task
+            "table_position",
+            "reward_available",
+            "reward_triggered",
+            "outcome",
+            "sampling_time",
             "iti",
-            "sampling_time"
         ])
 
     # Session control
@@ -84,86 +91,93 @@ class SocialTestSession:
             self.run_trial()
 
         self.running = False
-        print("[INFO] Test session ended")
+        print("[INFO] Social task session ended")
 
     # Trial logic
     def run_trial(self):
 
         trial_start = None
         trial_end = None
-        sampling_time = 0
-        rt = None
+        rt = np.nan
+        rt_dooropen = np.nan
+        rt_tablehold = np.nan
+        sampling_time = np.nan
+        iti = np.nan
+        poked = False
 
-        reset_table_to_default(self.ser)
-        self.wait(9) # 9 seconds wait for table to go back to default position
+        reset_table_to_default(self.ser) # the box the session starts with (which can be any box) = the default box
+        self.wait(9) # wait for table to return to default position before the next command
 
         # Choose table position
         if not self.position_block:
             self.refill_position_block()
 
         table_position = self.position_block.pop()
-        print(f"Current table position: {current_table_position}, Target: {table_position}")
+        print(f"Current position: {current_table_position}, Target position: {table_position}")
         
         move_table_to_position(self.ser, table_position)
-        print("MOVE COMMAND SENT")
+        print("Table command sent")
+        self.wait(6) # wait for table to turn to target position before the next command
+        print("Table reached target position")
 
         reward_available = table_position == self.rewarded_position
 
-        print(f"[INFO] Table position {table_position} | reward={reward_available}")
-
-        #  moved iti to after table move so table has to time to finish moving before start of next trial
-        iti = random.uniform(ITI_MIN, ITI_MAX)
-        self.wait(iti)
+        print(f"[INFO] Table position {table_position} | rewarded = {reward_available}")
 
         # Port A
         set_led(self.ser, "A", True)
+        ledA_onset_time = time.time()
+        
         while self.running and not STOP_EVENT.is_set():
             state, _ = self.shared.get_port("A")
             if state == "triggered" and sensor_held(self.shared, "A"):
-                print ("Port A poked, starting trial")
                 break
             time.sleep(0.01)
+        rt_dooropen = time.time() - ledA_onset_time
         set_led(self.ser, "A", False)
-
-        # Door open
         open_door(self.ser)
+        door_open_time = time.time()
 
-        # Table hold (2 seconds)
+        # Table hold (2 seconds minimum)
         print("Waiting for table hold...")
         while self.running and not STOP_EVENT.is_set():
             sampling_time = self.wait_for_table_hold()
             if sampling_time >= 2:
+                rt_tablehold = time.time() - door_open_time
                 print(f"Table hold successful: {sampling_time:.3f}s")
                 break
 
             print(f"Hold too short ({sampling_time:.3f}s), retrying...")
 
-
         # Port C
         set_led(self.ser, "C", True)
         while self.running and not STOP_EVENT.is_set():
-            st, _ = self.shared.get_port("C")
-            if st == "cleared":
+            state, _ = self.shared.get_port("C")
+            if state == "cleared":
                 break
             time.sleep(0.005)
 
-        wait_for_door_clear(self.shared)
+        #threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
 
-        trial_start = time.time() # start timer for led C counter
-
-        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
+        trial_start = time.time()
+        print("Trial start")
 
         poked = self.wait_for_poke("C")
-
+        wait_for_door_clear(self.shared)
+        close_door(self.ser) # <- delayed to here until firmware can be changed
         trial_end = time.time()
 
         rt = (trial_end - trial_start) if poked else 5
+        print("Trial end")
 
         # Reward delivery
         if poked and reward_available:
             deliver_reward(self.ser, "C", self.valve_time)
 
         set_led(self.ser, "C", False)
+
+        # ITI
+        iti = random.uniform(ITI_MIN, ITI_MAX)
 
         # --------------------------
         # Outcome classification
@@ -181,23 +195,29 @@ class SocialTestSession:
 
         self.results_df.loc[len(self.results_df)] = {
             "trial_num": self.trial_counter,
+            "port": self.port,
+            "trial_start": trial_start if trial_start is not None else np.nan,
+            "trial_end": trial_end if trial_end is not None else np.nan,
+            "rt": rt if rt is not None else np.nan,
+            "rt_dooropen": rt_dooropen,
+            "rt_tablehold": rt_tablehold if rt_tablehold is not None else np.nan,
+            "auto_dooropen": rt_dooropen if rt_dooropen is not None else np.nan,
             "table_position": table_position,
             "reward_available": reward_available,
-            "outcome": outcome,
-            "trial_start": trial_start,
-            "trial_end": trial_end,
-            "rt": rt,
-            "iti": iti,
-            "sampling_time": sampling_time
+            "poked": poked if poked is not None else np.nan,
+            "outcome": outcome if outcome is not None else np.nan,
+            "sampling_time": sampling_time if sampling_time is not None else np.nan,
+            "iti": iti if iti is not None else np.nan
         }
 
-        # wait for door to be fully closed from previous trial
-        wait_for_door_clear(self.shared)
+        # Wait for door to be fully closed from previous trial
+        wait_for_door_state(self.shared, target_state="door closed", timeout=None)
+        print("Door closed, ready for next trial")
 
-        print("Trial complete")
+        self.wait(iti)
 
     # --------------------------
-    # Helpers
+    # Helper functions
     # --------------------------
 
     def wait_for_poke(self, port):
@@ -220,9 +240,7 @@ class SocialTestSession:
                     state_now, _ = self.shared.get_port("table")
                     if state_now != "triggered":
                         break
-
                     time.sleep(0.001)
-
                 sampling_time = time.time() - start
                 return sampling_time
             time.sleep(0.001)
@@ -234,7 +252,6 @@ class SocialTestSession:
             if time.time() - start >= duration:
                 break
             time.sleep(0.02)
-
 
     def refill_position_block(self):
         half = self.block_size // 2
