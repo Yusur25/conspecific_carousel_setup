@@ -167,7 +167,7 @@ class SerialProcessor(threading.Thread):
 
             msg_l = msg.lower()
 
-            if msg_l in ("door opened", "door closed", "door moving"):
+            if msg_l in ("door opened", "door closed", "door moving", "door error orcurred", "door paused"):
                 prev_state, _ = self.shared.get_port("door")
                 if prev_state != msg_l:
                     self.shared.update("door", msg_l, ts)
