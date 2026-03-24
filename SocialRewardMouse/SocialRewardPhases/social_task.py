@@ -96,8 +96,6 @@ class SocialTestSession:
     # Trial logic
     def run_trial(self):
 
-        # disable_door_interlock(self.ser)
-
         trial_start = None
         trial_end = None
         rt = np.nan
@@ -106,9 +104,6 @@ class SocialTestSession:
         sampling_time = np.nan
         iti = np.nan
         poked = False
-
-        reset_table_to_default(self.ser) # the box the session starts with (which can be any box) becomes the default box
-        self.wait(9) # wait for table to return to default position before the next command
 
         # Choose table position
         if not self.position_block:
@@ -121,9 +116,10 @@ class SocialTestSession:
         print("Table command sent")
         self.wait(6) # wait for table to turn to target position before the next command
         print("Table reached target position")
+        table_ready_time = time.time()
 
         reward_available = table_position == self.rewarded_position
-
+        
         print(f"[INFO] Table position {table_position} | rewarded = {reward_available}")
 
         # Port A
@@ -150,6 +146,15 @@ class SocialTestSession:
             if sampling_time >= 2:
                 rt_tablehold = time.time() - door_open_time
                 print(f"Table hold successful: {sampling_time:.3f}s")
+
+                # Start table reset asynchronously
+                print("Resetting table to default (async)...")
+                threading.Thread(
+                    target=reset_table_to_default,
+                    args=(self.ser,),
+                    daemon=True
+                ).start()
+
                 break
 
             print(f"Hold too short ({sampling_time:.3f}s), retrying...")
@@ -218,7 +223,7 @@ class SocialTestSession:
         }
 
         # Wait for door to be fully closed from previous trial
-        wait_for_door_state(self.shared, target_state="door closed", timeout=None)
+        wait_for_door_state(self.shared, target_state=("door closed"), timeout=None)
         print("Door closed, ready for next trial")
 
         self.wait(iti)
