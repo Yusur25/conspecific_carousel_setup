@@ -8,11 +8,12 @@ import os
 from datetime import datetime
 from hardware import SharedSensorState, SerialReader, SerialProcessor, STOP_EVENT, shutdown_outputs
 from gui import SensorGUI, PerformanceGUI
+from SocialRewardPhases.social_task1 import SocialTestSession1
 from SocialRewardPhases.social_task import SocialTestSession
 from SocialRewardPhases.phase234 import SocialRewardSession
 from SocialRewardPhases.phase1 import Phase1Session
 
-"""All phases of social reward training in one script 
+"""All phases of social reward training in one script
 
 # Phase 2: door automatically opens -> rat holds table sensor for 100 ms -> port C LED -> rat pokes -> reward
 # Phase 3a: port A LED -> rat pokes -> door opens -> rat hold table sensor for 100 ms -> port C LED -> rat pokes -> reward
@@ -21,7 +22,7 @@ from SocialRewardPhases.phase1 import Phase1Session
 
 """
 
-valve_time = 0.30  # <- Change based on calibration, aim for 10-15 ul per poke
+valve_time = 0.20  # <- Change based on calibration, aim for 10-15 ul per poke
 
 def handle_sigint(sig, frame):
     STOP_EVENT.set()
@@ -126,15 +127,15 @@ def main():
                         return 0.5
                     elif trial < 30:
                         return 1.0
-                    elif trial < 50:
-                        return 1.5
                     else:
-                        return 2.0
+                        return 1.5
+                    # else:
+                    #     return 2.0
                 table_hold = gradual_hold
                 led_time = None  # unlimited time
                 require_port_a = True
             else: # phase 4
-                table_hold = 2  # seconds
+                table_hold = 1.5  # seconds
                 led_time = 5  # seconds
                 require_port_a = True
 
@@ -158,7 +159,7 @@ def main():
                 time.sleep(0.05)
         
         elif phase == "task":
-            session = SocialTestSession(
+            session = SocialTestSession1(
                 ser,
                 shared,
                 valve_time=valve_time,
