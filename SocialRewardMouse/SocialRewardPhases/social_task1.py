@@ -36,7 +36,7 @@ class SocialTestSession1:
             "trial_start",
             "trial_end",
             "rt",
-            "rt_dooropen",
+            "rt_dooropen", # Always 0 with disabled door
             "rt_tablehold",
             "auto_dooropen", # Always set to False in social_task
             "table_position",
@@ -99,9 +99,6 @@ class SocialTestSession1:
         # DISABLES DOOR (ALWAYS OPENED)
         # RETURNS TABLE TO DEFAULT IMMEDIATELY AFTER SUCCESSFUL SAMPLING
 
-        threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
-
         trial_start = None
         trial_end = None
         rt = np.nan
@@ -110,6 +107,19 @@ class SocialTestSession1:
         sampling_time = np.nan
         iti = np.nan
         poked = False
+
+        # Port A
+        set_led(self.ser, "A", True)
+        ledA_onset_time = time.time()
+        
+        while self.running and not STOP_EVENT.is_set():
+            state, _ = self.shared.get_port("A")
+            if state == "triggered" and sensor_held(self.shared, "A"):
+                break
+            time.sleep(0.01)
+        door_open_time = time.time()
+        rt_dooropen = door_open_time - ledA_onset_time
+        set_led(self.ser, "A", False)
 
         # Choose table position
         if not self.position_block:
@@ -122,28 +132,10 @@ class SocialTestSession1:
         print("Table command sent")
         self.wait(6) # wait for table to turn to target position before the next command
         print("Table reached target position")
-        
+
         reward_available = table_position == self.rewarded_position
 
         print(f"[INFO] Table position {table_position} | rewarded = {reward_available}")
-
-        # # Port A
-        # set_led(self.ser, "A", True)
-        # ledA_onset_time = time.time()
-        
-        # while self.running and not STOP_EVENT.is_set():
-        #     state, _ = self.shared.get_port("A")
-        #     if state == "triggered" and sensor_held(self.shared, "A"):
-        #         break
-        #     time.sleep(0.01)
-        # rt_dooropen = time.time() - ledA_onset_time
-        # set_led(self.ser, "A", False)
-        # #open_door(self.ser)
-        # threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        # wait_for_door_state(self.shared, target_state="door opened", timeout=None)
-        # print("Door opened, ready for trial")
-        rt_dooropen = 0
-        door_open_time = time.time()
 
         # Table hold (2 seconds minimum)
         print("Waiting for table hold...")
