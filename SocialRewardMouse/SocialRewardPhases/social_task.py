@@ -105,6 +105,8 @@ class SocialTestSession:
         iti = np.nan
         poked = False
 
+        #wait_for_door_and_table_clear(self.shared) # Ensure that the mouse starts trials in the main box, not in between door & table
+
         # Choose table position
         if not self.position_block:
             self.refill_position_block()
@@ -114,7 +116,7 @@ class SocialTestSession:
 
         move_table_to_position(self.ser, table_position)
         print("Table command sent")
-        self.wait(6) # wait for table to turn to target position before the next command
+        self.wait(6) # Wait for table to turn to target position before the next command
         print("Table reached target position")
         table_ready_time = time.time()
 
@@ -139,11 +141,11 @@ class SocialTestSession:
         print("Door opened, ready for trial")
         door_open_time = time.time()
 
-        # Table hold (2 seconds minimum)
+        # Table hold
         print("Waiting for table hold...")
         while self.running and not STOP_EVENT.is_set():
             sampling_time = self.wait_for_table_hold()
-            if sampling_time >= 2:
+            if sampling_time >= 1.5:
                 rt_tablehold = time.time() - door_open_time
                 print(f"Table hold successful: {sampling_time:.3f}s")
 
@@ -177,12 +179,12 @@ class SocialTestSession:
             deliver_reward(self.ser, "C", self.valve_time)
 
         set_led(self.ser, "C", False)
+        trial_end = time.time()
         print("Trial end")
         
         wait_for_door_and_table_clear(self.shared)
         #close_door(self.ser) # <- Delayed to here until firmware can be changed
         threading.Thread(target=close_door, args=(self.ser,), daemon=True).start()
-        trial_end = time.time()
 
         rt = (trial_end - trial_start) if poked else 5
 
