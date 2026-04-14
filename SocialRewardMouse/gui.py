@@ -117,6 +117,11 @@ class PerformanceGUI:
             self.ax_rttablehold.set_xlim(xmin, xmax)
             self.ax_rttablehold.set_ylabel("Reaction time (s)\n(table hold)")
             #self.ax_rttablehold.set_xlabel("Trial")
+            
+        else:
+            self.ax_rtdooropen.clear()
+            self.ax_rtdooropen.set_ylabel("Reaction time (s)\n(door open)")
+            self.ax_rtdooropen.set_xlabel("Trial")
         
         # --- rt_dooropen ---
         if "rt_dooropen" in results_df.columns:
@@ -136,7 +141,6 @@ class PerformanceGUI:
             self.ax_rtdooropen.clear()
             self.ax_rtdooropen.set_ylabel("Reaction time (s)\n(door open)")
             self.ax_rtdooropen.set_xlabel("Trial")
-            self.ax_rtdooropen.set_title("(No data)", pad=10, fontsize=10)
         
         # =========================
         # Outcome dots
@@ -144,12 +148,12 @@ class PerformanceGUI:
 
         if "reward_available" in results_df.columns:
             # task mode
-            self.ax_outcome.set_yticks([0.5, 1.5])
+            self.ax_outcome.set_yticks([0.25, 1.75])
             self.ax_outcome.set_yticklabels(["Unrewarded", "Rewarded"])
             self.ax_outcome.set_ylabel("Stimulus")
             
             for _, row in results_df.iterrows():
-                y = 1 if row["reward_available"] else 0
+                y = 1.75 if row["reward_available"] else 0.25
                 outcome = row.get("outcome", None)
                 if outcome == "hit":
                     color = "green"
@@ -207,7 +211,6 @@ class PerformanceGUI:
             self.ax_sampling.clear()
             self.ax_sampling.set_ylabel("Sampling time (s)")
             self.ax_sampling.set_xlabel("Trial")
-            self.ax_sampling.set_title("(No data)", pad=10, fontsize=10)
 
         # =========================
         # Block performance (10 trials)
@@ -217,6 +220,9 @@ class PerformanceGUI:
         self.ax_block.set_xlabel("Trial block (10)")
         self.ax_block.set_ylim(0, 100)
         self.ax_block.grid(True, axis="y")
+
+        self.ax_block.axhline(50, color="black", linestyle="-", linewidth=1, alpha=0.6)
+        self.ax_block.axhline(75, color="black", linestyle="--", linewidth=1, alpha=0.6)
 
         block_size = 10
         blocks = []
