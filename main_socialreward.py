@@ -8,9 +8,9 @@ import os
 from datetime import datetime
 from hardware import SharedSensorState, SerialReader, SerialProcessor, STOP_EVENT, shutdown_outputs
 from gui import SensorGUI, PerformanceGUI
-from SocialRewardPhases.social_task import SocialTestSession
-from SocialRewardPhases.phase234 import SocialRewardSession
-from SocialRewardPhases.phase1 import Phase1Session
+from SocialRewardRat.phase1 import Phase1Session
+from SocialRewardRat.phase234 import SocialRewardSession
+from SocialRewardRat.social_task import SocialTestSession
 
 """All phases of social reward training in one script 
 
@@ -21,7 +21,7 @@ from SocialRewardPhases.phase1 import Phase1Session
 
 """
 
-valve_time = 0.30  # <- Change based on calibration, aim for 10-15 ul per poke
+valve_time = 0.3 # <- Change based on calibration, aim for 20 ul per poke
 
 def handle_sigint(sig, frame):
     STOP_EVENT.set()
@@ -32,7 +32,7 @@ def main():
     # --- Base folder for all outputs ---
     animal = input("Enter animal name/ID: ").strip() or "unknown"
     session_n = input("Enter session number for the animal today: ").strip() or "1"
-    phase = input("Which phase? (1/2/3a/3b/4/task): ").strip()
+    phase = input("Which phase? (1/2/3/4/task): ").strip()
     date_str = datetime.now().strftime("%Y-%m-%d")
 
     BASE_SAVE_DIR = os.path.join("SocialRewardData", f"{animal}_{session_n}_{phase}_{date_str}")
@@ -110,23 +110,21 @@ def main():
 
             print("[INFO] Phase 1 session finished")
 
-        elif phase in ("2", "3a", "3b", "4"):
+        elif phase in ("2", "3", "4"):
             if phase == "2":
                 table_hold = 0.100
                 led_time = None
                 require_port_a = False
-            elif phase == "3a":
-                table_hold = 0.100 # seconds
-                led_time = None # unlimited time
-                require_port_a = True
-            elif phase == "3b":
+            elif phase == "3": #removed 3a and 3b and combined them into one phase 
                 def gradual_hold(session):
                     trial = session.trial_counter
                     if trial < 15:
-                        return 0.5
+                        return 0.2 # seconds
                     elif trial < 30:
+                        return 0.5
+                    elif trial < 45:
                         return 1.0
-                    elif trial < 50:
+                    elif trial < 60:
                         return 1.5
                     else:
                         return 2.0
@@ -162,7 +160,7 @@ def main():
                 ser,
                 shared,
                 valve_time=valve_time,
-                session_duration=3600
+                session_duration=5400
             )
 
             session.start()

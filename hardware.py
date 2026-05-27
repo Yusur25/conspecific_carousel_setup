@@ -2,6 +2,7 @@
 import threading
 import time
 import queue
+import random
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Tuple
@@ -210,7 +211,7 @@ class SerialProcessor(threading.Thread):
 # Hardware control functions
 #-----------------------------
 
-def deliver_reward(ser, port, valve_time=0.15):
+def deliver_reward(ser, port, valve_time):
     cmds = COMMANDS[port]
     ser.write(bytes([cmds["valve_on"]]))
     ser.flush()
@@ -260,9 +261,7 @@ def turn_table_degrees(ser, delta_degrees: int):
     if delta_degrees == 0:
         return
     
-    delta = delta_degrees % 360
-    if delta > 180:
-       delta -= 360
+    delta = delta_degrees
 
     direction = "CW" if delta > 0 else "CCW"
     angle = abs(delta)
@@ -294,7 +293,22 @@ def move_table_to_position(ser, target_position: int):
     current_angle = TABLE_POSITIONS[current_table_position]
     target_angle = TABLE_POSITIONS[target_position]
 
-    delta = target_angle - current_angle
+    direction = None
+
+        # Compute both paths
+    cw_delta = (target_angle - current_angle) % 360
+    ccw_delta = -((current_angle - target_angle) % 360)
+
+    # Choose direction
+    if direction is None:
+        direction = random.choice(["CW", "CCW"])
+
+    if direction == "CW":
+        delta = cw_delta
+    else:
+        delta = ccw_delta
+
+    print(f"[DEBUG] Moving to pos {target_position} via {direction}: {delta}°")
 
     turn_table_degrees(ser, delta)
 
@@ -391,9 +405,9 @@ def disable_door_interlock(ser):
     ser.write(bytes([DOOR_DISABLE_INTERLOCK]))
     ser.flush()
 
-def close_door(ser):
-    ser.write(bytes([DOOR_CLOSE]))
-    ser.flush()
+# def close_door(ser):
+#     ser.write(bytes([DOOR_CLOSE]))
+#     ser.flush()
 
 def close_door(ser, shared, timeout=5):
     """
@@ -411,6 +425,8 @@ def close_door(ser, shared, timeout=5):
             print("[ERROR] Door failed to open; aborting close.")
             return
 
+    # disable door
+    disable_door_interlock(ser)
     ser.write(bytes([DOOR_CLOSE]))
     ser.flush()
 

@@ -1,19 +1,22 @@
 # main.py
 import argparse
 import serial
+import queue
 import time
 import signal
 import os
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-from hardware import SharedSensorState, SerialListener, shutdown_outputs, STOP_EVENT
+from hardware import SharedSensorState, SerialReader, SerialProcessor, STOP_EVENT, shutdown_outputs
 from gui import PerformanceGUI, SensorGUI
 from utils import now, safe_filename
 
 from SMphases.phase1 import run_phase1
 from SMphases.phase2and3 import ClassicalConditioning
 from SMphases.phase4 import Phase4Experiment
+
+valve_time = 0.3 
 
 
 def handle_sigint(sig, frame):
@@ -55,17 +58,21 @@ def main():
     except Exception as e:
         print(f"Cannot open serial: {e}")
         return
-        
-    # shared state + listener + GUI (for all phases)
+
     shared = SharedSensorState()
-    listener = SerialListener(
-        ser,
+    q = queue.Queue()
+
+    reader = SerialReader(ser, q)
+    processor = SerialProcessor(
+        q,
         shared,
         event_log_path=sensor_log,
         table_csv_path=table_csv,
         door_csv_path=door_csv
     )
-    listener.start()
+
+    reader.start()
+    processor.start()
 
     perf_gui = PerformanceGUI(animal_name=animal)
     sensor_gui = SensorGUI()
@@ -79,7 +86,7 @@ def main():
             else: #phase 3
                 led_time = 5 # seconds
             conditioning = ClassicalConditioning(ser, shared,
-                perf_gui, sensor_gui, led_on_time=led_time)
+                perf_gui, sensor_gui, led_on_time=led_time, valve_time = valve_time)
 
             conditioning.start()
             print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")
@@ -91,7 +98,7 @@ def main():
                 time.sleep(0.1)
 
         elif phase == "4":
-            phase4 = Phase4Experiment(ser, shared, perf_gui, sensor_gui, led_on_time=5)
+            phase4 = Phase4Experiment(ser, shared, perf_gui, sensor_gui, led_on_time=5, valve_time= valve_time)
             phase4.start()
             print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")
 
@@ -125,7 +132,8 @@ def main():
             phase4.perf_gui.results_df.to_csv(trial_csv, index=False)
             print(f"[INFO] Trials saved: {trial_csv}")
 
-        listener.join(timeout=1) #added recently - could remove previous gui update blocks
+        reader.join(timeout=1)
+        processor.join(timeout=1)
         shutdown_outputs(ser)
         ser.close()
         perf_gui.close(save_path=perf_fig_path)

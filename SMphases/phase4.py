@@ -9,7 +9,7 @@ from SMphases.phase2and3 import ClassicalConditioning
 from hardware import (
     SharedSensorState, set_led, deliver_reward, STOP_EVENT,
     open_door, close_door, move_table_to_position, reset_table_to_default,
-    wait_for_door_clear,
+    wait_for_door_and_table_clear,
 )
 
 """
@@ -21,12 +21,13 @@ from hardware import (
     """
 
 class Phase4Experiment:
-    def __init__(self, ser, shared: SharedSensorState, perf_gui, sensor_gui, led_on_time):
+    def __init__(self, ser, shared: SharedSensorState, perf_gui, sensor_gui, led_on_time, valve_time):
         self.ser = ser
         self.shared = shared
         self.perf_gui = perf_gui
         self.sensor_gui = sensor_gui
         self.led_on_time = led_on_time
+        self.valve_time = valve_time
 
         self.running = False
         self.thread = None
@@ -59,7 +60,8 @@ class Phase4Experiment:
             self.shared,
             self.perf_gui,
             self.sensor_gui,
-            led_on_time=self.led_on_time
+            led_on_time=self.led_on_time,
+            valve_time = self.valve_time
         )
 
         conditioning.start()
@@ -88,20 +90,21 @@ class Phase4Experiment:
 
 
 
-    def run_sampling(self, sample_minutes, table_position, period_name):
+    def run_sampling(self, sample_minutes, table_position, period_name, min_sampling_time=None):
         """
         Move table, open door, let animal sample for sample_minutes.
         Wait for door to clear before closing.
         """
-        # Move table before door opens
+        # Move table before door opens, and wait 10 seconds so it stops moving
         move_table_to_position(self.ser, table_position)
+        time.sleep(15) 
         open_door(self.ser)
         t0 = time.time()
 
         sampling_durations = []
         prev_trigger = None
 
-        while (time.time() - t0) < (sample_minutes * 60) and not STOP_EVENT.is_set():
+        while not STOP_EVENT.is_set():
             state, ts = self.shared.get_port("table")
             if state == "triggered" and prev_trigger is None:
                 prev_trigger = ts
@@ -109,16 +112,37 @@ class Phase4Experiment:
                 sampling_durations.append((ts - prev_trigger).total_seconds())
                 prev_trigger = None
 
+
+            sampling_duration = sum(sampling_durations)
+
+            # include ongoing sampling WITHOUT appending
+            if prev_trigger is not None:
+                sampling_duration += (now() - prev_trigger).total_seconds()
+
+            elapsed = time.time() - t0
+
+            # normal end condition
+            if elapsed >= (sample_minutes * 60):
+
+                # if no minimum required -> stop normally
+                if min_sampling_time is None:
+                    break
+
+                # stop only once minimum sampling reached
+                if sampling_duration >= min_sampling_time:
+                    break
+
             time.sleep(0.05)
-
-
-        # add any ongoing trigger at end of sampling
+        # finalize ongoing trigger
         if prev_trigger is not None:
-            sampling_durations.append((now() - prev_trigger).total_seconds())
+            sampling_durations.append(
+                (now() - prev_trigger).total_seconds()
+            )
 
         sampling_duration = sum(sampling_durations)
 
         # Close door, reset table
+        wait_for_door_and_table_clear(self.shared)
         close_door(self.ser, self.shared)
         reset_table_to_default(self.ser)
 
@@ -149,14 +173,28 @@ class Phase4Experiment:
                     return
 
                 sampling_name = f"Sampling_{i+1}"
-                self.run_sampling(sample_minutes=5, table_position=1, period_name=sampling_name)
+                    # First sampling only
+                if i == 0:
+                    self.run_sampling(
+                        sample_minutes=20,
+                        table_position=1,
+                        period_name=sampling_name,
+                        min_sampling_time=120   # 2 minutes
+                    )
+                else:
+                    self.run_sampling(
+                        sample_minutes=3,
+                        table_position=1,
+                        period_name=sampling_name
+                    )
                 cc_name = f"CC{i + 2}"
-                self.run_classical_conditioning(duration_minutes=10, period_name=cc_name)
+                self.run_classical_conditioning(duration_minutes=5, period_name=cc_name)
 
             # Final sampling with new table position
-            self.run_sampling(sample_minutes=5, table_position=4, period_name="Sampling_5")
+            self.run_sampling(sample_minutes=3, table_position=3, period_name="Sampling_C2")
 
         finally:
             reset_table_to_default(self.ser)
-            close_door(self.ser)
+            wait_for_door_and_table_clear(self.shared)
+            close_door(self.ser, self.shared)
             self.running = False

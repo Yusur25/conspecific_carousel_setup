@@ -2,7 +2,7 @@ import time
 import random
 import threading
 import pandas as pd
-from hardware import set_led, sensor_held, incremental_reward, STOP_EVENT, open_door, close_door, reset_table_to_default, move_table_to_position, current_table_position, wait_for_door_clear, wait_for_door_state
+from hardware import set_led, sensor_held, incremental_reward, STOP_EVENT, open_door, close_door, reset_table_to_default, move_table_to_position, current_table_position, wait_for_door_and_table_clear, wait_for_door_state
 
 ITI_MIN = 5.0
 ITI_MAX = 7.0
@@ -129,7 +129,9 @@ class SocialTestSession:
         set_led(self.ser, "A", False)
 
         # Door open
-        open_door(self.ser)
+        threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
+        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        print("Door opened, ready for trial")
 
         # Table hold (2 seconds)
         print("Waiting for table hold...")
@@ -150,18 +152,17 @@ class SocialTestSession:
                 break
             time.sleep(0.005)
 
-        wait_for_door_clear(self.shared)
+        wait_for_door_and_table_clear(self.shared)
 
         trial_start = time.time()
 
         threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
 
-
         poked = self.wait_for_poke("C")
 
         trial_end = time.time()
 
-        rt = (trial_end - trial_start) if poked else 10
+        rt = (trial_end - trial_start) if poked else 5
 
         # Reward delivery
         if poked and reward_available:
@@ -207,7 +208,7 @@ class SocialTestSession:
     # --------------------------
 
     def wait_for_poke(self, port):
-        deadline = time.time() + 10
+        deadline = time.time() + 5
         while time.time() < deadline:
             if not self.running or STOP_EVENT.is_set():
                 break

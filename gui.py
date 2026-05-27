@@ -6,7 +6,7 @@ import pandas as pd
 
 
 class PerformanceGUI:
-    def __init__(self, animal_name="Animal"):
+    def __init__(self, animal_name="Animal", phase_selection="Phase"):
         plt.ion()
 
         self.fig = plt.figure(figsize=(8, 8))
@@ -43,7 +43,7 @@ class PerformanceGUI:
         self.ax_sampling.grid(True, axis="y")
         self.ax_sampling.set_title("Sampling duration per trial", pad=10, fontsize=10)
 
-        self.fig.suptitle(f"Performance Summary: {animal_name}", fontsize=14)
+        self.fig.suptitle(f"Performance Summary: {animal_name} | {phase_selection}", fontsize=14)
 
         plt.show(block=False)
 
@@ -57,6 +57,8 @@ class PerformanceGUI:
         # =========================
         # Reaction time plot
         # =========================
+        self.ax_rt.clear()
+
         valid = results_df["rt"].notna()
         trials = results_df.loc[valid, "trial_num"]
         rts = results_df.loc[valid, "rt"]
@@ -77,13 +79,31 @@ class PerformanceGUI:
         else:
             colors.append("blue")  # fallback
 
-        self.ax_rt.clear()
+        if "rt_initial" in results_df.columns:
+            valid_initial = results_df["rt_initial"].notna()
+            trials_initial = results_df.loc[valid_initial, "trial_num"]
+            rt_initial = results_df.loc[valid_initial, "rt_initial"]
+
+            self.ax_rt.plot(trials_initial, rt_initial, color="red", linewidth=1, alpha=0.5)
+            self.ax_rt.scatter(trials_initial, rt_initial, c="red", s=30, label="Port A/B")
+
         self.ax_rt.plot(trials, rts, color="black", linewidth=1, alpha=0.5)
-        self.ax_rt.scatter(trials, rts, c=colors, s=30)
+        self.ax_rt.scatter(trials, rts, c="blue", label="Reward RT")
+        self.ax_rt.legend()
         self.ax_rt.set_xlim(xmin, xmax)
-        self.ax_rt.set_ylabel("Reaction time for port C (s)")
+        self.ax_rt.set_ylabel("Reaction time (s)")
         self.ax_rt.set_xlabel("Trial")
         self.ax_rt.grid(True)
+
+
+        #     self.ax_rt.clear()
+        #     self.ax_rt.grid(True)
+        #     self.ax_rt.plot(trials_c, rts_c, c="black", linewidth=1, alpha=0.8)
+        #     self.ax_rt.scatter(trials_c, rts_c, c="black", s=20)
+
+        #     self.ax_rt.set_xlim(xmin, xmax)
+        #     self.ax_rt.set_ylabel("Reaction time (s)\n(reward)")
+        #     #self.ax_rt.set_xlabel("Trial")
 
         # =========================
         # Outcome dots
@@ -102,11 +122,11 @@ class PerformanceGUI:
                 if outcome == "hit":
                     color = "green"
                 elif outcome == "miss":
-                    color = "orange"
+                    color = "red"
                 elif outcome == "false_alarm":
                     color = "red"
                 elif outcome == "correct_rejection":
-                    color = "blue"
+                    color = "green"
                 else:
                     color = "gray"
 
@@ -165,6 +185,26 @@ class PerformanceGUI:
         self.ax_block.bar(x, blocks, width=0.6)
         self.ax_block.set_xticks(x)
         self.ax_block.set_xticklabels(labels, rotation=0)
+
+        # =========================
+        # Overall session performance
+        # =========================
+        if "outcome" in results_df.columns:
+            overall_correct = results_df["outcome"].isin(["hit", "correct_rejection"])
+            overall_pct = overall_correct.mean() * 100
+        else:
+            overall_pct = results_df["reward_triggered"].mean() * 100
+
+        # Add text to the plot
+        self.ax_block.text(
+            0.99, 0.95,
+            f"SESSION %: {overall_pct:.1f}%",
+            transform=self.ax_block.transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+        )
 
         # =========================
         # Sampling duration

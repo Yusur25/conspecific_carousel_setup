@@ -2,9 +2,8 @@ import time
 import random
 import threading
 import pandas as pd
-from hardware import (set_led, sensor_held, deliver_reward, incremental_reward, open_door, close_door, wait_for_door_clear, wait_for_door_state, STOP_EVENT)
+from hardware import (set_led, sensor_held, incremental_reward, deliver_reward, open_door, close_door, wait_for_door_clear, wait_for_door_state, STOP_EVENT)
 
-"""script for phases 2,3,4"""
 
 
 ITI_MIN = 5.0 #seconds
@@ -31,7 +30,7 @@ class SocialRewardSession:
         self.port = "C"
         self.results_df = pd.DataFrame(columns=[
             "trial_num", "port", "trial_start", "trial_end",
-            "rt", "iti", "reward_triggered", "sampling_time", "valve_time"
+            "rt","rt_initial","iti", "reward_triggered", "sampling_time", "valve_time"
         ])
 
     # ----------------------------
@@ -93,67 +92,34 @@ class SocialRewardSession:
 
         print("Trial start")
 
-        if self.require_port_a:
-            # Port A
-            set_led(self.ser, "A", True)
-            # require port to be cleared before accepting a new poke
-            while self.running and not STOP_EVENT.is_set():
-                st, _ = self.shared.get_port("A")
-                if st == "cleared":
-                    break
-                time.sleep(0.005)
-            if not self.wait_for_poke("A"):
-                return
+        # Port A
+        set_led(self.ser, "A", True)
+        ledA_onset_time = time.time()
+        deadline_A = ledA_onset_time + 300  # 300s timeout
+        # require port to be cleared before accepting a new poke
+        while self.running and not STOP_EVENT.is_set():
+            st, _ = self.shared.get_port("A")
+            if st == "cleared":
+                break
+            time.sleep(0.005)
+        poked_A = self.wait_for_poke("A", deadline=deadline_A)
+        SMALL_REWARD_TIME = 0.15  # seconds 
+
+        deliver_reward(self.ser, "A", SMALL_REWARD_TIME)
+
+
+        # ---- NEW LOGIC ----
+        if not poked_A:
+            print("[INFO] A not poked within 300s → reverting to forced C trials")
+
             set_led(self.ser, "A", False)
 
-        open_door(self.ser)
+            # run 3 fallback trials
+            self.run_forced_c_trials(n=3)
 
-        # # Table hold
-        # print("Waiting for table hold...")
-        # while self.running and not STOP_EVENT.is_set():
-        #     sampling_time = self.wait_for_table_hold()
-
-        #     if sampling_time >= required_hold:
-        #         print(f"Table hold successful: {sampling_time:.3f}s")
-        #         break
-
-        #     print(f"Hold too short ({sampling_time:.3f}s), retrying...")
-
-        TABLE_SAMPLE_TIMEOUT = 200
-        print("Waiting for table hold...")
-        while self.running and not STOP_EVENT.is_set():
-
-            sampling_time = self.wait_for_table_hold(timeout=TABLE_SAMPLE_TIMEOUT)
-
-            if sampling_time is None:
-                print("Table sampling timeout -> missed trial")
-                threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
-                wait_for_door_state(self.shared, "door closed")
-
-                trial_end = time.time()
-                iti = random.uniform(ITI_MIN, ITI_MAX)
-
-                self.results_df.loc[len(self.results_df)] = {
-                    "trial_num": self.trial_counter,
-                    "port": self.port,
-                    "trial_start": trial_start,
-                    "trial_end": trial_end,
-                    "rt": None,
-                    "iti": iti,
-                    "reward_triggered": False,
-                    "sampling_time": None,
-                    "valve_time": None
-                }
-
-                self.run_iti(iti)
-                print("Trial complete (missed)")
-                return
-
-            if sampling_time >= required_hold:
-                print(f"Table hold successful: {sampling_time:.3f}s")
-                break
-
-            print(f"Hold too short ({sampling_time:.3f}s), retrying...")
+            return  # end this trial, next loop starts fresh
+        set_led(self.ser, "A", False)
+        rt_initial = time.time() - ledA_onset_time
 
         # Port C
         set_led(self.ser, "C", True)
@@ -164,7 +130,6 @@ class SocialRewardSession:
                 break
             time.sleep(0.005)
         
-        wait_for_door_clear(self.shared)
         
         trial_start = time.time()
         if self.led_on_time is None:
@@ -172,7 +137,6 @@ class SocialRewardSession:
         else:
             deadline = trial_start + self.led_on_time
 
-        threading.Thread(target=close_door, args=(self.ser, self.shared), daemon=True).start()
 
         poked = self.wait_for_poke("C", deadline=deadline)
         trial_end = time.time()
@@ -192,14 +156,15 @@ class SocialRewardSession:
             "trial_start": trial_start,
             "trial_end": trial_end,
             "rt": rt,
+            "rt_initial": rt_initial,
             "iti": iti,
             "reward_triggered": rewarded,
             "sampling_time": sampling_time,
             "valve_time": valve_time_used
         }
 
-        # wait for door to be fully closed from previous trial
-        wait_for_door_state(self.shared, "door closed")
+        print(self.results_df.tail(1))
+
 
         # ITI
         self.run_iti(iti)
@@ -250,3 +215,34 @@ class SocialRewardSession:
         start = time.time()
         while self.running and not STOP_EVENT.is_set() and (time.time() - start < iti):
             time.sleep(0.05)
+
+    def run_forced_c_trials(self, n=3):
+        print(f"[INFO] Running {n} forced C trials")
+
+        for i in range(n):
+            if not self.running or STOP_EVENT.is_set():
+                return
+
+            print(f"[FORCED C] Trial {i+1}/{n}")
+
+            set_led(self.ser, "C", True)
+
+            # wait for port to clear
+            while self.running and not STOP_EVENT.is_set():
+                st, _ = self.shared.get_port("C")
+                if st == "cleared":
+                    break
+                time.sleep(0.005)
+
+            trial_start = time.time()
+            poked = self.wait_for_poke("C")
+            trial_end = time.time()
+
+            if poked:
+                incremental_reward(self.ser, "C", self.valve_time, self.reward_count)
+                self.reward_count += 1
+
+            set_led(self.ser, "C", False)
+
+            iti = random.uniform(ITI_MIN, ITI_MAX)
+            self.run_iti(iti)

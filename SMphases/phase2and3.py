@@ -35,12 +35,13 @@ def pick_port(presentation_history, forced_port):
 
 
 class ClassicalConditioning:
-    def __init__(self, ser, shared, perf_gui, sensor_gui, led_on_time):
+    def __init__(self, ser, shared, perf_gui, sensor_gui, led_on_time, valve_time):
         self.LED_ON_TIME = led_on_time
         self.ser = ser
         self.shared = shared
         self.perf_gui = perf_gui
         self.sensor_gui = sensor_gui
+        self.valve_time = valve_time
 
         self.running = False
         self.thread = None
@@ -99,22 +100,28 @@ class ClassicalConditioning:
                     break
 
                 st, _ = self.shared.get_port(port)
-                if st == "triggered" and sensor_held(
-                    self.shared, port
+                # only reward once
+                if (
+                    not rewarded
+                    and st == "triggered"
+                    and sensor_held(self.shared, port)
                 ):
                     rewarded = True
-                    break
+                    reward_time = datetime.now()
+
+                    deliver_reward(
+                        self.ser,
+                        port,
+                        self.valve_time
+                    )
 
                 time.sleep(0.01)
 
             set_led(self.ser, port, False)
             trial_end = datetime.now()
 
-            if rewarded:
-                deliver_reward(self.ser, port)
-
             rt = (
-                (trial_end - trial_start).total_seconds()
+                (reward_time - trial_start).total_seconds()
                 if rewarded else self.LED_ON_TIME
             )
 
