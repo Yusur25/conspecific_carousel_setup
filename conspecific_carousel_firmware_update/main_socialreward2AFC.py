@@ -1,0 +1,240 @@
+# main_socialreward2AFC.py
+# Entry point for 2AFC Social Reward training and task (rat and mouse).
+# Run: python main_socialreward2AFC.py
+#
+# Phases:
+#   1      — autoshaping (A+B LEDs, anti-camping)
+#   2      — auto-door, sensory min, A/B choice
+#   3      — port C init, door, sensory min, A/B choice
+#   3b     — port C init, door, gradual sensory min, A/B choice
+#   4      — port C init, door, sensory min, A/B with decision window
+#   forced — turntable, port C init, sensory min, single correct LED
+#   mixed  — adaptive forced/free mixture (75/25 → 50/50 → 25/75)
+#   free   — fully free choice (both LEDs, reward only correct port)
+
+import time
+import signal
+import os
+import json
+from datetime import datetime
+
+from serial_comm import DeviceConnection
+from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs
+from setup_gui_2AFC import SetupDialog2AFC
+
+
+def handle_sigint(_sig, _frame):
+    STOP_EVENT.set()
+    print("[INFO] Stopping...")
+
+
+signal.signal(signal.SIGINT, handle_sigint)
+
+
+def _build_gradual_hold(thresholds, holds):
+    def gradual_hold(session):
+        trial = session.trial_counter
+        for threshold, hold in zip(thresholds, holds[:-1]):
+            if trial < threshold:
+                return hold
+        return holds[-1]
+    return gradual_hold
+
+
+def _save_metadata(save_dir, params):
+    meta = dict(params)
+    meta["timestamp"] = datetime.now().isoformat()
+    path = os.path.join(save_dir, "metadata.json")
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    print(f"[INFO] Metadata saved: {path}")
+
+
+def _run_loop(session, shared, sensor_gui, perf_gui, session_duration_t):
+    while session.running and not STOP_EVENT.is_set():
+        if session_duration_t and session.trial_counter >= session_duration_t:
+            print(f"[INFO] Trial limit ({session_duration_t}) reached")
+            STOP_EVENT.set()
+            break
+        snap = shared.get()
+        sensor_gui.update(snap)
+        perf_gui.update(session.results_df)
+        time.sleep(0.05)
+
+
+def main():
+    dialog = SetupDialog2AFC()
+    params = dialog.run()
+
+    if params is None:
+        print("[INFO] Setup cancelled.")
+        return
+
+    phase     = params["phase"]
+    species   = params["species"]
+    animal    = params["animal"]
+    session_n = params["session_n"]
+    port      = params["port"]
+    baud      = params["baud"]
+
+    from SocialReward2AFC.Phase1       import Phase1Session2AFC
+    from SocialReward2AFC.Phase2       import Phase2Session2AFC
+    from SocialReward2AFC.Phase3       import Phase3Session2AFC
+    from SocialReward2AFC.Phase4       import Phase4Session2AFC
+    from SocialReward2AFC.ForcedChoice import ForcedChoiceSession
+    from SocialReward2AFC.MixedChoice  import MixedChoiceSession
+    from SocialReward2AFC.FreeChoice   import FreeChoiceSession
+    from gui_socialreward2AFC          import SensorGUI, PerformanceGUI
+
+    # Output directory
+    date_str      = datetime.now().strftime("%Y-%m-%d")
+    BASE_SAVE_DIR = os.path.join(
+        "SocialReward2AFCData",
+        f"{animal}_{session_n}_{phase}_{date_str}_{species}",
+    )
+    os.makedirs(BASE_SAVE_DIR, exist_ok=True)
+    print(f"[INFO] Saving to: {BASE_SAVE_DIR}")
+
+    params["date"]     = date_str
+    params["save_dir"] = BASE_SAVE_DIR
+    _save_metadata(BASE_SAVE_DIR, params)
+
+    sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
+    trial_csv  = os.path.join(BASE_SAVE_DIR, "trials.csv")
+    perf_fig   = os.path.join(BASE_SAVE_DIR, "performance.png")
+
+    # Connect
+    try:
+        device = DeviceConnection(port, baudrate=baud)
+        device.connect()
+        time.sleep(2)
+    except Exception as e:
+        print(f"[ERROR] Cannot open serial port: {e}")
+        return
+
+    shared = SharedSensorState()
+    logger = EventLogger(
+        shared,
+        event_log_path=sensor_log,
+        session_start=time.time(),
+    )
+    device.on_event(logger)
+
+    sensor_gui = SensorGUI()
+    perf_gui   = PerformanceGUI(animal_name=animal, phase_selection=phase)
+
+    session    = None
+    valve_time = params["valve_time"]
+    iti_min    = params["iti_min"]
+    iti_max    = params["iti_max"]
+    dur_s      = params["session_duration_s"]
+    dur_t      = params["session_duration_t"]
+
+    try:
+        if phase == "1":
+            session = Phase1Session2AFC(
+                device, shared, species=species,
+                valve_time=valve_time,
+                iti_min=iti_min, iti_max=iti_max,
+                session_duration=dur_s,
+            )
+
+        elif phase == "2":
+            session = Phase2Session2AFC(
+                device, shared, species=species,
+                sensory_minimum=params["sensory_minimum"],
+                valve_time=valve_time,
+                session_duration=dur_s,
+            )
+
+        elif phase == "3":
+            session = Phase3Session2AFC(
+                device, shared, species=species,
+                sensory_minimum=params["sensory_minimum"],
+                valve_time=valve_time,
+                session_duration=dur_s,
+            )
+
+        elif phase == "3b":
+            sensory_min_fn = _build_gradual_hold(
+                params["phase3b_thresholds"],
+                params["phase3b_holds"],
+            )
+            session = Phase3Session2AFC(
+                device, shared, species=species,
+                sensory_minimum=sensory_min_fn,
+                valve_time=valve_time,
+                session_duration=dur_s,
+            )
+
+        elif phase == "4":
+            session = Phase4Session2AFC(
+                device, shared, species=species,
+                sensory_minimum=params["phase4_sensory_min"],
+                decision_window=params["phase4_decision_win"],
+                valve_time=valve_time,
+                session_duration=dur_s,
+            )
+
+        elif phase == "forced":
+            session = ForcedChoiceSession(
+                device, shared, species=species,
+                valve_time=valve_time,
+                sensory_minimum=params["task_sensory_min"],
+                decision_window=params["task_decision_win"],
+                angle_a=params["angle_a"],
+                angle_b=params["angle_b"],
+                session_duration=dur_s,
+            )
+
+        elif phase == "mixed":
+            session = MixedChoiceSession(
+                device, shared, species=species,
+                valve_time=valve_time,
+                sensory_minimum=params["task_sensory_min"],
+                decision_window=params["task_decision_win"],
+                angle_a=params["angle_a"],
+                angle_b=params["angle_b"],
+                start_forced_ratio=params["mixed_start_ratio"],
+                session_duration=dur_s,
+            )
+
+        elif phase == "free":
+            session = FreeChoiceSession(
+                device, shared, species=species,
+                valve_time=valve_time,
+                sensory_minimum=params["task_sensory_min"],
+                decision_window=params["task_decision_win"],
+                angle_a=params["angle_a"],
+                angle_b=params["angle_b"],
+                session_duration=dur_s,
+            )
+
+        else:
+            print(f"[ERROR] Unknown phase: {phase}")
+            return
+
+        session.start()
+        print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")
+        _run_loop(session, shared, sensor_gui, perf_gui, dur_t)
+
+    finally:
+        print("[INFO] Shutting down...")
+        STOP_EVENT.set()
+
+        if session is not None:
+            session.stop()
+            session.results_df.to_csv(trial_csv, index=False)
+            print(f"[INFO] Trials saved: {trial_csv}")
+            perf_gui.update(session.results_df)
+
+        sensor_gui.update(shared.get())
+        shutdown_outputs(device)
+        device.disconnect()
+        perf_gui.close(save_path=perf_fig)
+        sensor_gui.close()
+        print("[INFO] Clean shutdown complete")
+
+
+if __name__ == "__main__":
+    main()
