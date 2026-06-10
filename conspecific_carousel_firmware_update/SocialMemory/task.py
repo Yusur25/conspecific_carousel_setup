@@ -295,7 +295,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         if delta == 0:
             return "none"
         direction = "CW" if delta > 0 else "CCW"
-        turn_table_degrees(self.ser, delta)
+        turn_table_degrees(self.ser, -delta)   # negate: firmware positive = physical CCW
         self._current_angle = target_angle % 360
         return direction
 

@@ -1,25 +1,27 @@
-# Task.py — Social Reward Task (rat and mouse)
+# Phase4Stimuli.py — 4-box weighted-presentation variant of the Social Reward task
+#
+# Like the Task, but with four independently weighted and rewarded boxes.
+#
+# Box → angle: box N = N × 90°  (box0=0°, box1=90°, box2=180°, box3=270°)
+#
+# Configuration:
+#   box_config = {
+#       0: {'freq': 40, 'rewarded': True},
+#       1: {'freq':  5, 'rewarded': False},
+#       2: {'freq':  5, 'rewarded': False},
+#       3: {'freq': 40, 'rewarded': True},
+#   }
+#   Frequencies are relative weights (need not sum to 100).
 #
 # Trial sequence:
-#   1. Turntable moves to presentation position (90° or 270°, balanced block)
-#   2. LED A on → animal pokes A (no deadline) → rt_dooropen recorded
-#   3. Door opens → wait for fully open → sensory timer starts
-#   4. Animal holds table sensor >= sensory_minimum (indefinite — no timeout)
-#   5. Animal clears table sensor →
-#      a. LED C on, decision window starts
-#      b. Turntable rotates 45° CCW in parallel (stimulus removed from view)
-#   6. Animal pokes C within decision_window → outcome classified
-#   7. Reward if hit + reward_available (rat: incremental; mouse: fixed)
-#   8. LED C off → close_door_safe → wait for fully closed
-#   9. Turntable returns to 0° or 180° (random — balances turn direction)
-#  10. Log → ITI (2–7 s)
-#
-# Outcomes: hit / miss / false_alarm / correct_rejection
-# Recorded: turn_direction (CW/CCW) of each presentation move at trial start
-#
-# Species differences:
-#   rat   — reward volume scales incrementally (incremental_reward)
-#   mouse — fixed reward volume (deliver_reward)
+#   1. Turntable → presentation box (weighted random from planned_sequence)
+#   2. LED A on → poke A (no deadline)
+#   3. Door opens → sensory minimum (indefinite, retry loop)
+#   4. Table sensor cleared
+#   5. LED C on + 45° CCW (async)
+#   6. Poke C within decision_window → outcome + reward if box is rewarded
+#   7. Door closes; turntable makes a random 45–180° turn (multiple of 45°)
+#   8. Log → ITI
 
 import random
 import threading
@@ -41,9 +43,9 @@ from hardware import (
 from .base_session import BaseSocialSession
 
 
-class SocialTaskSession(BaseSocialSession):
+class Phase4StimuliSession(BaseSocialSession):
 
-    _session_name = "Social Task Session"
+    _session_name = "4-Stimuli Session"
     ITI_MIN = 1.0
     ITI_MAX = 3.0
 
@@ -53,68 +55,58 @@ class SocialTaskSession(BaseSocialSession):
         shared: SharedSensorState,
         species: str,
         valve_time: float,
-        sensory_minimum: float = 2.0,
-        decision_window: float = 10.0,
-        rewarded_angle: int = 90,      # degrees; presentation angle with reward animal
-        unrewarded_angle: int = 270,
+        box_config: dict,        # {box_num: {'freq': float, 'rewarded': bool}}
+        sensory_minimum: float,
+        decision_window: float,
         session_duration: float = None,
     ):
         super().__init__(ser, shared, species, valve_time, session_duration)
-        self.sensory_minimum  = sensory_minimum
-        self.decision_window  = decision_window
-        self.rewarded_angle   = rewarded_angle
-        self.unrewarded_angle = unrewarded_angle
+        self.box_config      = box_config
+        self.sensory_minimum = sensory_minimum
+        self.decision_window = decision_window
 
-        self.block_size       = 10
-        self.position_block   = []   # kept for fallback; primary is planned_sequence
-        self.planned_sequence: list = []
-
-        # Track actual table angle in degrees locally (starts at home = 0°)
-        self._current_angle = 0
+        self._current_angle   = 0
+        self.planned_sequence: list = []   # list of presentation angles
 
         self.results_df = pd.DataFrame(columns=[
             "trial_num",
-            "port",
-            "trial_start",        # LED C on
-            "trial_end",          # poke C or decision window elapsed
-            "rt",                 # LED C on → poke C (nan if miss)
-            "rt_dooropen",        # LED A on → poke A
-            "rt_tablehold",         # door fully open → sensory minimum met
-            "rt_to_first_table",    # door open → first table contact
-            "sampling_time",        # duration of table contact that met threshold
-            "total_sampling_time",  # sum of all table contact bouts in trial
-            "trial_duration",       # LED A on → port C poke (nan if no poke)
+            "presentation_box",
             "presentation_angle",
-            "start_angle",        # table position at trial start (0 or 180)
-            "turn_direction",     # CW or CCW for presentation move
             "reward_available",
+            "trial_start",
+            "trial_end",
+            "trial_duration",       # LED A on → port C poke / decision window end
+            "rt",                   # LED C on → port C poke
+            "rt_dooropen",          # LED A on → port A poke
+            "rt_tablehold",         # door open → sensory min met
+            "rt_to_first_table",    # door open → first table contact
+            "sampling_time",        # last bout that met sensory minimum
+            "total_sampling_time",  # sum of all table contact bouts
+            "return_angle",         # angle table returned to after trial
+            "start_angle",
+            "turn_direction",
             "reward_triggered",
-            "outcome",            # hit / miss / false_alarm / correct_rejection
+            "outcome",              # hit / miss / false_alarm / correct_rejection
             "reward_count",
             "valve_time",
             "iti",
         ])
 
-    # ── Session start: pre-generate full trial sequence ──────────────────────
+    # ── Session start: pre-generate weighted sequence ─────────────────────────
 
     def _run_session(self):
-        n    = self.max_trials if self.max_trials is not None else 100
-        half = self.block_size // 2
-        seq  = []
-        for _ in range(n // self.block_size):
-            block = [self.rewarded_angle] * half + [self.unrewarded_angle] * half
-            random.shuffle(block)
-            seq.extend(block)
-        rem = n % self.block_size
-        if rem:
-            partial = ([self.rewarded_angle]   * (rem // 2) +
-                       [self.unrewarded_angle] * (rem - rem // 2))
-            random.shuffle(partial)
-            seq.extend(partial)
-        self.planned_sequence = seq
-        print(f"[INFO] Pre-assigned {len(seq)}-trial sequence "
-              f"(rewarded=box {self.rewarded_angle // 90}, "
-              f"unrewarded=box {self.unrewarded_angle // 90})")
+        n       = self.max_trials if self.max_trials is not None else 100
+        boxes   = sorted(self.box_config.keys())
+        weights = [self.box_config[b]["freq"] for b in boxes]
+        angles  = [b * 90 for b in boxes]
+
+        self.planned_sequence = random.choices(angles, weights=weights, k=n)
+        freq_str = ", ".join(
+            f"box{b}={self.box_config[b]['freq']}% "
+            f"({'rewarded' if self.box_config[b]['rewarded'] else 'unrewarded'})"
+            for b in boxes
+        )
+        print(f"[INFO] Pre-assigned {n}-trial sequence — {freq_str}")
         super()._run_session()
 
     # ── Trial logic ───────────────────────────────────────────────────────────
@@ -135,13 +127,16 @@ class SocialTaskSession(BaseSocialSession):
         # ── 1. Read presentation angle from pre-generated sequence ────────────
         idx = self.trial_counter - 1
         if idx >= len(self.planned_sequence):
-            block = ([self.rewarded_angle]   * (self.block_size // 2) +
-                     [self.unrewarded_angle] * (self.block_size // 2))
-            random.shuffle(block)
-            self.planned_sequence.extend(block)
+            boxes   = sorted(self.box_config.keys())
+            weights = [self.box_config[b]["freq"] for b in boxes]
+            angles  = [b * 90 for b in boxes]
+            self.planned_sequence.extend(random.choices(angles, weights=weights, k=10))
+
         presentation_angle = self.planned_sequence[idx]
-        reward_available   = (presentation_angle == self.rewarded_angle)
-        print(f"Presentation: {presentation_angle}° | reward_available={reward_available}")
+        presentation_box   = presentation_angle // 90
+        reward_available   = self.box_config[presentation_box]["rewarded"]
+        print(f"Presentation: box {presentation_box} ({presentation_angle}°) "
+              f"| reward_available={reward_available}")
 
         # ── 2. Move turntable to presentation position ────────────────────────
         start_angle    = self._current_angle
@@ -160,7 +155,6 @@ class SocialTaskSession(BaseSocialSession):
             time.sleep(0.005)
 
         poked_a = self._wait_for_poke("A")
-
         if not poked_a:
             set_led(self.ser, "A", False)
             return  # session stopped
@@ -169,7 +163,7 @@ class SocialTaskSession(BaseSocialSession):
         set_led(self.ser, "A", False)
         print(f"Port A poked (rt_dooropen={rt_dooropen:.3f} s)")
 
-        # ── 4. Open door — wait for fully open; sensory timer starts ──────────
+        # ── 4. Open door — wait fully open ────────────────────────────────────
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
         wait_for_door_state(self.shared, target_state="door opened", timeout=None)
         door_open_time = time.time()
@@ -199,11 +193,11 @@ class SocialTaskSession(BaseSocialSession):
         if not self.running or STOP_EVENT.is_set():
             return
 
-        # ── 6. Wait for animal to clear table sensor ──────────────────────────
+        # ── 6. Wait for table sensor clear ────────────────────────────────────
         print("Waiting for animal to clear table sensor...")
         wait_for_table_clear(self.shared)
 
-        # ── 7. LED C on + 45° CCW turn in parallel ────────────────────────────
+        # ── 7. LED C on + 45° CCW turn ────────────────────────────────────────
         set_led(self.ser, self.port, True)
         print("LED C on — 45° CCW turn to remove stimulus (async)")
         threading.Thread(
@@ -223,17 +217,17 @@ class SocialTaskSession(BaseSocialSession):
         trial_end = time.time()
         set_led(self.ser, self.port, False)
 
-        trial_duration = trial_end - ledA_onset   # always: covers decision window even on miss
+        trial_duration = trial_end - ledA_onset
+
         if poked:
             rt = trial_end - trial_start
             if reward_available:
-                rewarded = True
+                rewarded        = True
                 valve_time_used = self._deliver_reward()
                 self.reward_count += 1
                 print(f"Reward delivered "
                       f"(reward #{self.reward_count}, valve={valve_time_used:.3f} s)")
 
-        # ── 9. Outcome ────────────────────────────────────────────────────────
         if reward_available and poked:
             outcome = "hit"
         elif reward_available and not poked:
@@ -244,27 +238,28 @@ class SocialTaskSession(BaseSocialSession):
             outcome = "correct_rejection"
         print(f"Outcome: {outcome}")
 
-        # ── 10. Close door safely ─────────────────────────────────────────────
+        # ── 9. Close door ─────────────────────────────────────────────────────
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
         wait_for_door_state(self.shared, "door closed")
-        print("Door closed")
 
-        # ── 11. Turntable returns to 0° or 180° (random) ──────────────────────
-        # Ensure the 45° CCW partial turn motor has stopped before the return move.
+        # ── 10. Return to random position (45–180° from current, mult. of 45°) ─
         wait_for_table_stopped(self.shared)
-        return_angle = random.choice([0, 180])
+        magnitude    = random.choice([45, 90, 135, 180])
+        direction    = random.choice([1, -1])
+        return_angle = (self._current_angle + direction * magnitude) % 360
         self._turn_to(return_angle)
-        print(f"Table returning to {return_angle}°")
+        print(f"Table → {return_angle}° "
+              f"(random {magnitude}° {'CW' if direction > 0 else 'CCW'})")
         wait_for_table_stopped(self.shared)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
         self._log(
-            trial_start, trial_end, rt, rt_dooropen, rt_tablehold,
+            trial_start, trial_end, trial_duration, rt, rt_dooropen, rt_tablehold,
             rt_to_first_table, sampling_time, total_sampling_time,
-            trial_duration, presentation_angle, start_angle, turn_direction,
-            reward_available, rewarded, outcome, valve_time_used, iti,
+            presentation_box, presentation_angle, reward_available, return_angle,
+            start_angle, turn_direction, rewarded, outcome, valve_time_used, iti,
         )
         self._run_iti(iti)
         print("Trial complete")
@@ -272,57 +267,46 @@ class SocialTaskSession(BaseSocialSession):
     # ── Table helpers ─────────────────────────────────────────────────────────
 
     def _turn_to(self, target_angle: int) -> str:
-        """Turn table to target_angle. Returns 'CW', 'CCW', or 'none'.
-
-        Negates the logical delta before passing to turn_table_degrees because
-        the firmware treats positive values as CCW, opposite to our CW-positive
-        logical convention.
-        """
         delta = (target_angle - self._current_angle) % 360
         if delta > 180:
             delta -= 360
         if delta == 0:
             return "none"
         direction = "CW" if delta > 0 else "CCW"
-        turn_table_degrees(self.ser, -delta)        # negate: firmware positive = physical CCW
+        turn_table_degrees(self.ser, -delta)   # negate: firmware positive = physical CCW
         self._current_angle = target_angle % 360
         return direction
 
     def _turn_ccw_partial(self, degrees: int) -> None:
-        """Turn CCW by degrees. Daemon thread use only."""
         turn_table_degrees(self.ser, -degrees)
         self._current_angle = (self._current_angle - degrees) % 360
 
-    def _refill_position_block(self) -> None:
-        half  = self.block_size // 2
-        block = [self.rewarded_angle] * half + [self.unrewarded_angle] * half
-        random.shuffle(block)
-        self.position_block = block
-
-    def _log(self, trial_start, trial_end, rt, rt_dooropen, rt_tablehold,
-             rt_to_first_table, sampling_time, total_sampling_time,
-             trial_duration, presentation_angle, start_angle, turn_direction,
-             reward_available, reward_triggered, outcome, valve_time_used, iti):
+    def _log(self, trial_start, trial_end, trial_duration, rt, rt_dooropen,
+             rt_tablehold, rt_to_first_table, sampling_time, total_sampling_time,
+             presentation_box, presentation_angle, reward_available, return_angle,
+             start_angle, turn_direction, reward_triggered, outcome,
+             valve_time_used, iti):
         self.results_df.loc[len(self.results_df)] = {
             "trial_num":            self.trial_counter,
-            "port":                 self.port,
+            "presentation_box":     presentation_box,
+            "presentation_angle":   presentation_angle,
+            "reward_available":     reward_available,
             "trial_start":          trial_start,
             "trial_end":            trial_end,
+            "trial_duration":       trial_duration,
             "rt":                   rt,
             "rt_dooropen":          rt_dooropen,
             "rt_tablehold":         rt_tablehold,
             "rt_to_first_table":    rt_to_first_table,
             "sampling_time":        sampling_time,
             "total_sampling_time":  total_sampling_time,
-            "trial_duration":       trial_duration,
-            "presentation_angle": presentation_angle,
-            "start_angle":        start_angle,
-            "turn_direction":     turn_direction,
-            "reward_available":   reward_available,
-            "reward_triggered":   reward_triggered,
-            "outcome":            outcome,
-            "reward_count":       self.reward_count,
-            "valve_time":         valve_time_used,
-            "iti":                iti,
+            "return_angle":         return_angle,
+            "start_angle":          start_angle,
+            "turn_direction":       turn_direction,
+            "reward_triggered":     reward_triggered,
+            "outcome":              outcome,
+            "reward_count":         self.reward_count,
+            "valve_time":           valve_time_used,
+            "iti":                  iti,
         }
         print(self.results_df.iloc[-1].to_dict())

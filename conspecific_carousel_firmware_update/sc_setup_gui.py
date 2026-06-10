@@ -1,6 +1,11 @@
 # sc_setup_gui.py — Pre-session configuration dialog for Social Choice
+import json
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "socialchoice_last_settings.json")
 
 SPECIES_DEFAULTS = {
     "rat": {
@@ -44,6 +49,40 @@ class SCSetupDialog:
         self._build_ui()
         self._on_species_change()
         self._on_phase_change()
+        self._apply_saved_settings()
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+
+    def _save_settings(self):
+        s = {"species": self._species_var.get()}
+        for k, v in self._vars.items():
+            s[k] = v.get()
+        for k, v in self._timing_vars.items():
+            s[f"t_{k}"] = v.get()
+        try:
+            with open(_SETTINGS_FILE, "w") as f:
+                json.dump(s, f, indent=2)
+        except Exception:
+            pass
+
+    def _apply_saved_settings(self):
+        try:
+            with open(_SETTINGS_FILE) as f:
+                s = json.load(f)
+        except Exception:
+            return
+        if "species" in s:
+            self._species_var.set(s["species"])
+            self._on_species_change()
+        if "phase" in s:
+            self._vars["phase"].set(s["phase"])
+            self._on_phase_change()
+        for k, v in self._vars.items():
+            if k in s:
+                v.set(s[k])
+        for k, v in self._timing_vars.items():
+            if f"t_{k}" in s:
+                v.set(s[f"t_{k}"])
 
     # ── Layout helpers ────────────────────────────────────────────────────────
 
@@ -273,6 +312,7 @@ class SCSetupDialog:
             "social_duration":   social_duration,
             "notes":             self._notes.get("1.0", "end").strip(),
         }
+        self._save_settings()
         self.root.destroy()
 
     def run(self):

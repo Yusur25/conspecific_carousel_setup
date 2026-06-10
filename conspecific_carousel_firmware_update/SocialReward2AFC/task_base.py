@@ -97,15 +97,17 @@ class TaskBase2AFC(Base2AFCSession):
         presentation_angle = self._position_block.pop()
         correct_port       = self._correct_port(presentation_angle)
 
-        rt              = np.nan
-        rt_dooropen     = np.nan
-        rt_tablehold    = np.nan
-        sampling_time   = np.nan
-        trial_start     = np.nan
-        trial_end       = np.nan
-        valve_time_used = np.nan
-        poked_port      = None
-        rewarded        = False
+        rt                  = np.nan
+        rt_dooropen         = np.nan
+        rt_tablehold        = np.nan
+        rt_to_first_table   = np.nan
+        sampling_time       = np.nan
+        total_sampling_time = 0.0
+        trial_start         = np.nan
+        trial_end           = np.nan
+        valve_time_used     = np.nan
+        poked_port          = None
+        rewarded            = False
 
         # 1. Turntable to presentation angle
         start_angle    = self._current_angle
@@ -141,14 +143,20 @@ class TaskBase2AFC(Base2AFCSession):
 
         # 4. Sensory minimum (indefinite, retry loop)
         print(f"Waiting for sensory minimum ({self.sensory_minimum:.3f} s)...")
+        first_contact_time = None
         while self.running and not STOP_EVENT.is_set():
-            s_time = self._wait_for_table_contact()
+            s_time, contact_start = self._wait_for_table_contact()
             if s_time is None:
                 return {}
 
+            if first_contact_time is None:
+                first_contact_time = contact_start
+            total_sampling_time += s_time
+
             if s_time >= self.sensory_minimum:
-                rt_tablehold  = time.time() - door_open_time
-                sampling_time = s_time
+                rt_tablehold      = time.time() - door_open_time
+                rt_to_first_table = first_contact_time - door_open_time
+                sampling_time     = s_time
                 print(f"Sensory minimum met: {s_time:.3f} s")
                 break
 
@@ -228,7 +236,9 @@ class TaskBase2AFC(Base2AFCSession):
             "rt":                 rt,
             "rt_dooropen":        rt_dooropen,
             "rt_tablehold":       rt_tablehold,
+            "rt_to_first_table":  rt_to_first_table,
             "sampling_time":      sampling_time,
+            "total_sampling_time": total_sampling_time,
             "start_angle":        start_angle,
             "turn_direction":     turn_direction,
             "reward_triggered":   rewarded,
@@ -246,7 +256,7 @@ class TaskBase2AFC(Base2AFCSession):
         if delta == 0:
             return "none"
         direction = "CW" if delta > 0 else "CCW"
-        turn_table_degrees(self.ser, delta)
+        turn_table_degrees(self.ser, -delta)   # negate: firmware positive = physical CCW
         self._current_angle = target_angle % 360
         return direction
 

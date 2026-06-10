@@ -30,10 +30,9 @@ class PerformanceGUI:
         self._mode = mode  # "training" or "task"
         self._animal_name = animal_name
 
+        self._base_title = f"Social Memory — {animal_name} ({mode})"
         self.fig = plt.figure(figsize=(10, 8))
-        self.fig.suptitle(
-            f"Social Memory — {animal_name} ({mode})", fontsize=13
-        )
+        self.fig.suptitle(self._base_title, fontsize=13)
 
         if mode == "training":
             self._build_training_axes()
@@ -96,6 +95,11 @@ class PerformanceGUI:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
+
+        # Training mode: update trial counter in suptitle
+        if conditioning_df is None and "trial_num" in df.columns and not df["trial_num"].isna().all():
+            trial = int(df["trial_num"].max()) + 1
+            self.fig.suptitle(f"{self._base_title}  |  Trial: {trial}", fontsize=13)
 
         if conditioning_df is None:
             self._update_training(df)

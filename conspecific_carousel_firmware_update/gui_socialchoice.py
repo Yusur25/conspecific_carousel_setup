@@ -34,10 +34,10 @@ class PerformanceGUI:
         self._phase  = phase_selection
 
         self.fig = plt.figure(figsize=(11, 8))
-        title = f"Social Choice — {animal_name}"
+        self._base_title = f"Social Choice — {animal_name}"
         if phase_selection:
-            title += f" | {phase_selection}"
-        self.fig.suptitle(title, fontsize=13)
+            self._base_title += f" | {phase_selection}"
+        self.fig.suptitle(self._base_title, fontsize=13)
 
         gs = self.fig.add_gridspec(3, 2, hspace=0.55, wspace=0.35)
         self.ax_rt      = self.fig.add_subplot(gs[0, :])   # full width
@@ -71,6 +71,10 @@ class PerformanceGUI:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
+
+        if "trial_num" in df.columns and not df["trial_num"].isna().all():
+            trial = int(df["trial_num"].max()) + 1
+            self.fig.suptitle(f"{self._base_title}  |  Trial: {trial}", fontsize=13)
 
         if "choice_type" in df.columns:
             self._update_two_choice(df)

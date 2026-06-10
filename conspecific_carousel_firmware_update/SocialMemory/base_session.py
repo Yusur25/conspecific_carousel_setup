@@ -39,6 +39,7 @@ class BaseSMSession:
 
         self.trial_counter = 0
         self.reward_count = 0
+        self.max_trials = None
         self.running = False
         self.thread = None
 
@@ -78,6 +79,9 @@ class BaseSMSession:
             self.trial_counter += 1
             print(f"\n=== Trial {self.trial_counter} ===")
             self._run_trial()
+            if self.max_trials is not None and self.trial_counter >= self.max_trials:
+                print(f"[INFO] Trial limit ({self.max_trials}) reached")
+                break
 
         self.running = False
         print(f"[INFO] {self._session_name} ended")

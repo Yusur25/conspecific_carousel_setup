@@ -20,7 +20,10 @@ import json
 from datetime import datetime
 
 from serial_comm import DeviceConnection
-from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs
+from hardware import (
+    SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs,
+    turn_table_degrees,
+)
 from setup_gui import SetupDialog
 
 
@@ -52,16 +55,14 @@ def _save_metadata(save_dir, params):
     print(f"[INFO] Metadata saved: {path}")
 
 
-def _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials):
-    """Poll GUIs and enforce the trial-count limit (time limit is handled inside the session)."""
+def _run_loop(session, shared, sensor_gui, perf_gui):
+    """Poll GUIs while the session runs. Trial/time limits are enforced inside the session."""
     while session.running and not STOP_EVENT.is_set():
-        if session_duration_trials and session.trial_counter >= session_duration_trials:
-            print(f"[INFO] Trial limit ({session_duration_trials}) reached")
-            STOP_EVENT.set()
-            break
         snap = shared.get()
         sensor_gui.update(snap)
-        perf_gui.update(session.results_df, current_trial_port="C")
+        planned = getattr(session, "planned_sequence", None)
+        perf_gui.update(session.results_df, current_trial_port="C",
+                        planned_sequence=planned)
         time.sleep(0.05)
 
 
@@ -86,8 +87,11 @@ def main():
     sensory_minimum_simple = params.get("sensory_minimum", 0.100)  # phases 2 and 3a
     phase4_sensory_min = params["phase4_sensory_min"]
     phase4_decision_window = params["phase4_decision_window"]
-    task_sensory_min = params["task_sensory_min"]
-    task_decision_window = params["task_decision_window"]
+    task_sensory_min      = params["task_sensory_min"]
+    task_decision_window  = params["task_decision_window"]
+    task_rewarded_angle   = params["task_rewarded_angle"]
+    task_unrewarded_angle = params["task_unrewarded_angle"]
+    stim4_config          = params.get("stim4_config")
     phase3b_thresholds = params["phase3b_thresholds"]
     phase3b_holds = params["phase3b_holds"]
 
@@ -152,9 +156,10 @@ def main():
                 valve_time=valve_time,
                 session_duration=session_duration_s,
             )
+            session.max_trials = session_duration_trials
             session.start()
             print("[INFO] Phase 1 running — press Ctrl+C to stop")
-            _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials)
+            _run_loop(session, shared, sensor_gui, perf_gui)
             print("[INFO] Phase 1 session finished")
 
         elif phase == "2":
@@ -166,9 +171,10 @@ def main():
                 valve_time=valve_time,
                 session_duration=session_duration_s,
             )
+            session.max_trials = session_duration_trials
             print("[INFO] Phase 2 running — press Ctrl+C to stop")
             session.start()
-            _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials)
+            _run_loop(session, shared, sensor_gui, perf_gui)
 
         elif phase in ("3a", "3b"):
             sensory_minimum = (
@@ -184,9 +190,10 @@ def main():
                 valve_time=valve_time,
                 session_duration=session_duration_s,
             )
+            session.max_trials = session_duration_trials
             print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")
             session.start()
-            _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials)
+            _run_loop(session, shared, sensor_gui, perf_gui)
 
         elif phase == "4":
             session = Phase4Session(
@@ -198,9 +205,10 @@ def main():
                 valve_time=valve_time,
                 session_duration=session_duration_s,
             )
+            session.max_trials = session_duration_trials
             print("[INFO] Phase 4 running — press Ctrl+C to stop")
             session.start()
-            _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials)
+            _run_loop(session, shared, sensor_gui, perf_gui)
 
         elif phase == "task":
             session = SocialTaskSession(
@@ -210,10 +218,42 @@ def main():
                 valve_time=valve_time,
                 sensory_minimum=task_sensory_min,
                 decision_window=task_decision_window,
+                rewarded_angle=task_rewarded_angle,
+                unrewarded_angle=task_unrewarded_angle,
                 session_duration=session_duration_s,
             )
+            session.max_trials = session_duration_trials
             session.start()
-            _run_loop(session, shared, sensor_gui, perf_gui, session_duration_trials)
+            # Wait briefly for _run_session to pre-generate planned_sequence
+            time.sleep(0.1)
+            perf_gui.draw_plan(session.planned_sequence,
+                               rewarded_angle=task_rewarded_angle)
+            _run_loop(session, shared, sensor_gui, perf_gui)
+
+        elif phase == "4stimuli":
+            if stim4_config is None:
+                print("[ERROR] 4stimuli config missing — check setup GUI.")
+                return
+            from SocialReward.Phase4Stimuli import Phase4StimuliSession
+            session = Phase4StimuliSession(
+                device,
+                shared,
+                species=species,
+                valve_time=valve_time,
+                box_config=stim4_config["box_config"],
+                sensory_minimum=stim4_config["sensory_min"],
+                decision_window=stim4_config["decision_win"],
+                session_duration=session_duration_s,
+            )
+            session.max_trials = session_duration_trials
+            session.start()
+            time.sleep(0.1)
+            # Build rewarded_angle from the first rewarded box for label colouring
+            rewarded_boxes = [b for b, cfg in stim4_config["box_config"].items()
+                              if cfg["rewarded"]]
+            rewarded_angle = rewarded_boxes[0] * 90 if rewarded_boxes else None
+            perf_gui.draw_plan(session.planned_sequence, rewarded_angle=rewarded_angle)
+            _run_loop(session, shared, sensor_gui, perf_gui)
 
         else:
             print(f"[ERROR] Unknown phase: {phase}")
@@ -225,6 +265,36 @@ def main():
             session.stop()
             session.results_df.to_csv(trial_csv, index=False)
             print(f"[INFO] Trials saved: {trial_csv}")
+
+        # Return turntable to box 0 (home) before powering down.
+        # Raw polling loops are used throughout so STOP_EVENT doesn't abort the moves.
+        if phase == "task" and session is not None:
+            try:
+                def _poll_until_stopped(timeout=20.0):
+                    time.sleep(1.0)   # grace period for motor-start firmware event
+                    deadline = time.time() + timeout
+                    while time.time() < deadline:
+                        state, _ = shared.get_port("table_motor")
+                        if state != "table moving":
+                            return
+                        time.sleep(0.05)
+
+                # Step 1: let any in-progress move (e.g. killed mid-turn) finish
+                print("[INFO] Waiting for any in-progress table move to complete...")
+                _poll_until_stopped()
+
+                # Step 2: send home command (negate delta — firmware positive = physical CCW)
+                current = getattr(session, "_current_angle", 0)
+                delta = (0 - current) % 360
+                if delta > 180:
+                    delta -= 360
+                if delta != 0:
+                    print(f"[INFO] Returning turntable to box 0 from logical {current}°...")
+                    turn_table_degrees(device, -delta)
+                    _poll_until_stopped()
+                print("[INFO] Turntable at home")
+            except Exception as e:
+                print(f"[WARN] Home return failed: {e}")
 
         shutdown_outputs(device)
         device.disconnect()

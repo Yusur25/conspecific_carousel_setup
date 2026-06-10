@@ -19,7 +19,7 @@ import json
 from datetime import datetime
 
 from serial_comm import DeviceConnection
-from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs
+from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs, turn_table_degrees
 from setup_gui_2AFC import SetupDialog2AFC
 
 
@@ -50,12 +50,8 @@ def _save_metadata(save_dir, params):
     print(f"[INFO] Metadata saved: {path}")
 
 
-def _run_loop(session, shared, sensor_gui, perf_gui, session_duration_t):
+def _run_loop(session, shared, sensor_gui, perf_gui):
     while session.running and not STOP_EVENT.is_set():
-        if session_duration_t and session.trial_counter >= session_duration_t:
-            print(f"[INFO] Trial limit ({session_duration_t}) reached")
-            STOP_EVENT.set()
-            break
         snap = shared.get()
         sensor_gui.update(snap)
         perf_gui.update(session.results_df)
@@ -214,9 +210,10 @@ def main():
             print(f"[ERROR] Unknown phase: {phase}")
             return
 
+        session.max_trials = dur_t
         session.start()
         print(f"[INFO] Phase {phase} running — press Ctrl+C to stop")
-        _run_loop(session, shared, sensor_gui, perf_gui, dur_t)
+        _run_loop(session, shared, sensor_gui, perf_gui)
 
     finally:
         print("[INFO] Shutting down...")
@@ -227,6 +224,32 @@ def main():
             session.results_df.to_csv(trial_csv, index=False)
             print(f"[INFO] Trials saved: {trial_csv}")
             perf_gui.update(session.results_df)
+
+        # Return turntable to home (box 0) for task phases
+        if phase in ("forced", "mixed", "free") and session is not None:
+            try:
+                def _poll_stopped(timeout=20.0):
+                    time.sleep(1.0)
+                    deadline = time.time() + timeout
+                    while time.time() < deadline:
+                        state, _ = shared.get_port("table_motor")
+                        if state != "table moving":
+                            return
+                        time.sleep(0.05)
+
+                print("[INFO] Waiting for any in-progress table move...")
+                _poll_stopped()
+                current = getattr(session, "_current_angle", 0)
+                delta = (0 - current) % 360
+                if delta > 180:
+                    delta -= 360
+                if delta != 0:
+                    print(f"[INFO] Returning turntable to home from {current}°...")
+                    turn_table_degrees(device, -delta)
+                    _poll_stopped()
+                print("[INFO] Turntable at home")
+            except Exception as e:
+                print(f"[WARN] Home return failed: {e}")
 
         sensor_gui.update(shared.get())
         shutdown_outputs(device)

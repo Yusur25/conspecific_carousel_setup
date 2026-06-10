@@ -41,6 +41,7 @@ class BaseSocialSession:
         self.port = "C"
         self.trial_counter = 0
         self.reward_count = 0
+        self.max_trials = None
         self.running = False
         self.thread = None
         # Subclasses define self.results_df in their own __init__
@@ -74,6 +75,9 @@ class BaseSocialSession:
             self.trial_counter += 1
             print(f"\n=== Trial {self.trial_counter} ===")
             self._run_trial()
+            if self.max_trials is not None and self.trial_counter >= self.max_trials:
+                print(f"[INFO] Trial limit ({self.max_trials}) reached")
+                break
 
         self.running = False
         print(f"[INFO] {self._session_name} ended")
@@ -92,10 +96,12 @@ class BaseSocialSession:
         deliver_reward(self.ser, self.port, self.valve_time)
         return self.valve_time
 
-    def _wait_for_table_contact(self):
+    def _wait_for_table_contact(self, deadline: float = None):
         """Wait for table sensor to trigger and measure hold duration.
-        Returns seconds held, or None if session stopped."""
+        Returns (seconds_held, contact_start), or (None, None) if stopped or deadline exceeded."""
         while self.running and not STOP_EVENT.is_set():
+            if deadline is not None and time.time() >= deadline:
+                return None, None
             state, _ = self.shared.get_port("table")
             if state == "triggered":
                 start = time.time()
@@ -103,9 +109,9 @@ class BaseSocialSession:
                     if self.shared.get_port("table")[0] != "triggered":
                         break
                     time.sleep(0.001)
-                return time.time() - start
+                return time.time() - start, start
             time.sleep(0.001)
-        return None
+        return None, None
 
     def _wait_for_poke(self, port: str, deadline: float = None) -> bool:
         """Block until port sensor is triggered and held. Returns True/False."""

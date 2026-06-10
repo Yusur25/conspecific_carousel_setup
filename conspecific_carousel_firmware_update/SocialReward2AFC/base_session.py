@@ -46,6 +46,7 @@ class Base2AFCSession:
 
         self.trial_counter = 0
         self.reward_count = 0
+        self.max_trials = None
         self.running = False
         self.thread = None
 
@@ -82,6 +83,9 @@ class Base2AFCSession:
             self.trial_counter += 1
             print(f"\n=== Trial {self.trial_counter} ===")
             self._run_trial()
+            if self.max_trials is not None and self.trial_counter >= self.max_trials:
+                print(f"[INFO] Trial limit ({self.max_trials}) reached")
+                break
 
         self.running = False
         print(f"[INFO] {self._session_name} ended")
@@ -160,9 +164,12 @@ class Base2AFCSession:
                     return port
             time.sleep(0.001)
 
-    def _wait_for_table_contact(self):
-        """Wait for table sensor trigger; measure hold. Returns seconds or None."""
+    def _wait_for_table_contact(self, deadline: float = None):
+        """Wait for table sensor trigger; measure hold.
+        Returns (seconds_held, contact_start), or (None, None) if stopped or deadline exceeded."""
         while self.running and not STOP_EVENT.is_set():
+            if deadline is not None and time.time() >= deadline:
+                return None, None
             state, _ = self.shared.get_port("table")
             if state == "triggered":
                 start = time.time()
@@ -170,9 +177,9 @@ class Base2AFCSession:
                     if self.shared.get_port("table")[0] != "triggered":
                         break
                     time.sleep(0.001)
-                return time.time() - start
+                return time.time() - start, start
             time.sleep(0.001)
-        return None
+        return None, None
 
     def _wait(self, duration: float) -> None:
         start = time.time()

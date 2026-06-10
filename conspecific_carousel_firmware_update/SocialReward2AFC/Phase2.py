@@ -59,7 +59,9 @@ class Phase2Session2AFC(Base2AFCSession):
             "trial_end",
             "rt",
             "rt_tablehold",
+            "rt_to_first_table",
             "sampling_time",
+            "total_sampling_time",
             "iti",
             "outcome",
             "reward_count",
@@ -67,14 +69,16 @@ class Phase2Session2AFC(Base2AFCSession):
         ])
 
     def _run_trial(self):
-        rt              = np.nan
-        rt_tablehold    = np.nan
-        sampling_time   = np.nan
-        trial_start     = np.nan
-        trial_end       = np.nan
-        valve_time_used = np.nan
-        rewarded        = False
-        outcome         = "missed"
+        rt                  = np.nan
+        rt_tablehold        = np.nan
+        rt_to_first_table   = np.nan
+        sampling_time       = np.nan
+        total_sampling_time = 0.0
+        trial_start         = np.nan
+        trial_end           = np.nan
+        valve_time_used     = np.nan
+        rewarded            = False
+        outcome             = "missed"
 
         # 1. Open door automatically
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
@@ -84,16 +88,22 @@ class Phase2Session2AFC(Base2AFCSession):
 
         # 2. Sensory minimum (200 s timeout)
         print(f"Waiting for sensory minimum ({self.sensory_minimum:.3f} s)...")
-        sm_met = False
+        sm_met             = False
+        first_contact_time = None
+        deadline           = door_open_time + TABLE_SENSOR_TIMEOUT
 
         while self.running and not STOP_EVENT.is_set():
-            if time.time() - door_open_time >= TABLE_SENSOR_TIMEOUT:
+            if time.time() >= deadline:
                 print(f"Sensory minimum not met within {TABLE_SENSOR_TIMEOUT} s")
                 break
 
-            s_time = self._wait_for_table_contact()
+            s_time, contact_start = self._wait_for_table_contact(deadline=deadline)
             if s_time is None:
                 break
+
+            if first_contact_time is None:
+                first_contact_time = contact_start
+            total_sampling_time += s_time
 
             if s_time >= self.sensory_minimum:
                 rt_tablehold  = time.time() - door_open_time
@@ -104,14 +114,17 @@ class Phase2Session2AFC(Base2AFCSession):
 
             print(f"Sensory minimum too short ({s_time:.3f} s), retrying...")
 
+        rt_to_first_table = (first_contact_time - door_open_time
+                             if first_contact_time is not None else np.nan)
+
         if not sm_met:
             iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
             threading.Thread(
                 target=close_door_safe, args=(self.ser, self.shared), daemon=True
             ).start()
             wait_for_door_state(self.shared, "door closed")
-            self._log(np.nan, None, False, np.nan, rt_tablehold, sampling_time,
-                      iti, "missed", np.nan)
+            self._log(np.nan, None, False, np.nan, rt_tablehold, rt_to_first_table,
+                      sampling_time, total_sampling_time, iti, "missed", np.nan)
             self._run_iti(iti)
             print("Trial complete (missed)")
             return
@@ -166,26 +179,30 @@ class Phase2Session2AFC(Base2AFCSession):
         wait_for_door_state(self.shared, "door closed")
 
         self._log(trial_start, poked_port, rewarded, rt, rt_tablehold,
-                  sampling_time, iti, outcome, valve_time_used)
+                  rt_to_first_table, sampling_time, total_sampling_time,
+                  iti, outcome, valve_time_used)
         self._run_iti(iti)
         print("Trial complete")
 
     def _log(self, trial_start, poked_port, rewarded, rt, rt_tablehold,
-             sampling_time, iti, outcome, valve_time_used):
+             rt_to_first_table, sampling_time, total_sampling_time,
+             iti, outcome, valve_time_used):
         self.results_df.loc[len(self.results_df)] = {
-            "trial_num":       self.trial_counter,
-            "active_ports":    str(self._get_active_reward_ports()),
-            "poked_port":      poked_port,
-            "forced":          self._forced_port is not None,
-            "reward_triggered":rewarded,
-            "trial_start":     trial_start,
-            "trial_end":       time.time(),
-            "rt":              rt,
-            "rt_tablehold":    rt_tablehold,
-            "sampling_time":   sampling_time,
-            "iti":             iti,
-            "outcome":         outcome,
-            "reward_count":    self.reward_count,
-            "valve_time":      valve_time_used,
+            "trial_num":           self.trial_counter,
+            "active_ports":        str(self._get_active_reward_ports()),
+            "poked_port":          poked_port,
+            "forced":              self._forced_port is not None,
+            "reward_triggered":    rewarded,
+            "trial_start":         trial_start,
+            "trial_end":           time.time(),
+            "rt":                  rt,
+            "rt_tablehold":        rt_tablehold,
+            "rt_to_first_table":   rt_to_first_table,
+            "sampling_time":       sampling_time,
+            "total_sampling_time": total_sampling_time,
+            "iti":                 iti,
+            "outcome":             outcome,
+            "reward_count":        self.reward_count,
+            "valve_time":          valve_time_used,
         }
         print(self.results_df.iloc[-1].to_dict())

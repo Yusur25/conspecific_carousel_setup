@@ -5,8 +5,13 @@
 #
 # Returns a dict of validated parameters on Start, or None on Cancel.
 
+import json
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "socialmemory_last_settings.json")
 
 SPECIES_DEFAULTS = {
     "rat": {
@@ -72,6 +77,58 @@ class SMSetupDialog:
         self._build_ui()
         self._on_species_change()
         self._on_mode_change()
+        self._apply_saved_settings()
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+
+    def _save_settings(self):
+        s = {
+            "species": self._species_var.get(),
+            "mode":    self._mode_var.get(),
+        }
+        for k, v in self._vars.items():
+            s[k] = v.get()
+        for k, v in self._cc_vars.items():
+            s[f"cc_{k}"] = v.get()
+        for k, v in self._task_vars.items():
+            s[f"task_{k}"] = v.get()
+        for port, v in self._port_vars.items():
+            s[f"port_{port}"] = v.get()
+        for port, v in self._task_port_vars.items():
+            s[f"task_port_{port}"] = v.get()
+        try:
+            with open(_SETTINGS_FILE, "w") as f:
+                json.dump(s, f, indent=2)
+        except Exception:
+            pass
+
+    def _apply_saved_settings(self):
+        try:
+            with open(_SETTINGS_FILE) as f:
+                s = json.load(f)
+        except Exception:
+            return
+        if "species" in s:
+            self._species_var.set(s["species"])
+            self._on_species_change()
+        if "mode" in s:
+            self._mode_var.set(s["mode"])
+            self._on_mode_change()
+        for k, v in self._vars.items():
+            if k in s:
+                v.set(s[k])
+        for k, v in self._cc_vars.items():
+            if f"cc_{k}" in s:
+                v.set(s[f"cc_{k}"])
+        for k, v in self._task_vars.items():
+            if f"task_{k}" in s:
+                v.set(s[f"task_{k}"])
+        for port, v in self._port_vars.items():
+            if f"port_{port}" in s:
+                v.set(s[f"port_{port}"])
+        for port, v in self._task_port_vars.items():
+            if f"task_port_{port}" in s:
+                v.set(s[f"task_port_{port}"])
 
     # ── Layout helpers ────────────────────────────────────────────────────────
 
@@ -430,6 +487,7 @@ class SMSetupDialog:
                 "notes":         self._notes.get("1.0", "end").strip(),
             }
 
+        self._save_settings()
         self.root.destroy()
 
     # ── Public ────────────────────────────────────────────────────────────────

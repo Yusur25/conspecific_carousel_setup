@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\cmazu\\\\Documents\\\\GitHub\\\\conspecific_carousel_firmware_update\" -Recurse -Filter \"*.py\")",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table FullName)"
+    ]
+  }
+}

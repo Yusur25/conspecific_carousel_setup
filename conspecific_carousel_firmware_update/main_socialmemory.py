@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 
 from serial_comm import DeviceConnection
-from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs
+from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs, turn_table_degrees
 from sm_setup_gui import SMSetupDialog
 
 
@@ -196,6 +196,32 @@ def main():
                 print(f"[INFO] Presentations saved: {pres_path}")
                 print(f"[INFO] Conditioning trials saved: {cc_path}")
                 perf_gui.update(session.presentations_df, session.conditioning_df)
+
+        # Return turntable to home after task (task uses turntable)
+        if mode == "task" and session is not None:
+            try:
+                def _poll_stopped(timeout=20.0):
+                    time.sleep(1.0)
+                    deadline = time.time() + timeout
+                    while time.time() < deadline:
+                        state, _ = shared.get_port("table_motor")
+                        if state != "table moving":
+                            return
+                        time.sleep(0.05)
+
+                print("[INFO] Waiting for any in-progress table move...")
+                _poll_stopped()
+                current = getattr(session, "_current_angle", 0)
+                delta = (0 - current) % 360
+                if delta > 180:
+                    delta -= 360
+                if delta != 0:
+                    print(f"[INFO] Returning turntable to home from {current}°...")
+                    turn_table_degrees(device, -delta)
+                    _poll_stopped()
+                print("[INFO] Turntable at home")
+            except Exception as e:
+                print(f"[WARN] Home return failed: {e}")
 
         sensor_gui.update(shared.get())
         shutdown_outputs(device)
