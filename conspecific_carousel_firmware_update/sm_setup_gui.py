@@ -22,16 +22,17 @@ SPECIES_DEFAULTS = {
         "cc_iti_min":        8.0,
         "cc_iti_max":       15.0,
         "cc_reward_prob":    1.0,
+        "cc_delay":          0.0,
         # Task S1
         "s1_n":              4,
         "s1_duration":      300.0,
-        "s1_angle":          90,
+        "s1_box":             1,
         "s1_iti_min":       600.0,
         "s1_iti_max":       600.0,
         # Task S2
         "s2_n":              1,
         "s2_duration":      300.0,
-        "s2_angle":         270,
+        "s2_box":             3,
         "s2_iti_min":       600.0,
         "s2_iti_max":       600.0,
     },
@@ -42,14 +43,15 @@ SPECIES_DEFAULTS = {
         "cc_iti_min":        8.0,
         "cc_iti_max":       15.0,
         "cc_reward_prob":    1.0,
+        "cc_delay":          0.0,
         "s1_n":              4,
         "s1_duration":      180.0,
-        "s1_angle":          90,
+        "s1_box":             1,
         "s1_iti_min":       300.0,
         "s1_iti_max":       300.0,
         "s2_n":              1,
         "s2_duration":      180.0,
-        "s2_angle":         270,
+        "s2_box":             3,
         "s2_iti_min":       300.0,
         "s2_iti_max":       300.0,
     },
@@ -246,13 +248,13 @@ class SMSetupDialog:
         s1f.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=2)
         self._task_vars["s1_n"]        = tk.StringVar()
         self._task_vars["s1_duration"] = tk.StringVar()
-        self._task_vars["s1_angle"]    = tk.StringVar()
+        self._task_vars["s1_box"]      = tk.StringVar()
         self._task_vars["s1_iti_min"]  = tk.StringVar()
         self._task_vars["s1_iti_max"]  = tk.StringVar()
         for i, (label, key) in enumerate([
             ("# presentations:",  "s1_n"),
             ("Duration (s):",     "s1_duration"),
-            ("Table angle (°):",  "s1_angle"),
+            ("Box (0–3):",        "s1_box"),
             ("ITI min (s):",      "s1_iti_min"),
             ("ITI max (s):",      "s1_iti_max"),
         ]):
@@ -264,22 +266,27 @@ class SMSetupDialog:
         s2f.grid(row=0, column=2, columnspan=2, sticky="ew", padx=4, pady=2)
         self._task_vars["s2_n"]        = tk.StringVar()
         self._task_vars["s2_duration"] = tk.StringVar()
-        self._task_vars["s2_angle"]    = tk.StringVar()
+        self._task_vars["s2_box"]      = tk.StringVar()
         self._task_vars["s2_iti_min"]  = tk.StringVar()
         self._task_vars["s2_iti_max"]  = tk.StringVar()
         for i, (label, key) in enumerate([
             ("# presentations:",  "s2_n"),
             ("Duration (s):",     "s2_duration"),
-            ("Table angle (°):",  "s2_angle"),
+            ("Box (0–3):",        "s2_box"),
             ("ITI min (s):",      "s2_iti_min"),
             ("ITI max (s):",      "s2_iti_max"),
         ]):
             self._row(s2f, label, self._task_vars[key], row=i, width=10)
 
+        tk.Label(self._task_frame,
+                 text="Box positions: 0 = home, 1 = 90° CW, 2 = 180°, 3 = 270° CW",
+                 font=("Arial", 8), fg="gray").grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 2))
+
         # CC sub-frame (within task)
         ccf = tk.LabelFrame(self._task_frame,
                             text="Classical Conditioning (during ITI)", padx=6, pady=4)
-        ccf.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+        ccf.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
 
         tk.Label(ccf, text="Ports:", anchor="w").grid(
             row=0, column=0, sticky="w", padx=4, pady=2)
@@ -296,15 +303,21 @@ class SMSetupDialog:
         self._task_vars["cc_iti_min"]     = tk.StringVar()
         self._task_vars["cc_iti_max"]     = tk.StringVar()
         self._task_vars["cc_reward_prob"] = tk.StringVar()
+        self._task_vars["cc_delay"]       = tk.StringVar()
         self._task_vars["valve_time"]     = tk.StringVar()
         for i, (label, key) in enumerate([
             ("CC LED on time (s):",  "cc_led_on_time"),
             ("CC trial ITI min (s):","cc_iti_min"),
             ("CC trial ITI max (s):","cc_iti_max"),
             ("Reward probability:",  "cc_reward_prob"),
+            ("CC delay (s):",        "cc_delay"),
             ("Valve time (s):",      "valve_time"),
         ]):
             self._row(ccf, label, self._task_vars[key], row=1 + i, width=10)
+        tk.Label(ccf,
+                 text="(CC delay: idle time before conditioning starts each ITI)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=7, column=0, columnspan=4, sticky="w", padx=4)
 
         # ── Notes ─────────────────────────────────────────────────────────────
         ttk.Separator(root, orient="horizontal").grid(
@@ -337,18 +350,19 @@ class SMSetupDialog:
 
         self._task_vars["s1_n"].set(str(d["s1_n"]))
         self._task_vars["s1_duration"].set(str(d["s1_duration"]))
-        self._task_vars["s1_angle"].set(str(d["s1_angle"]))
+        self._task_vars["s1_box"].set(str(d["s1_box"]))
         self._task_vars["s1_iti_min"].set(str(d["s1_iti_min"]))
         self._task_vars["s1_iti_max"].set(str(d["s1_iti_max"]))
         self._task_vars["s2_n"].set(str(d["s2_n"]))
         self._task_vars["s2_duration"].set(str(d["s2_duration"]))
-        self._task_vars["s2_angle"].set(str(d["s2_angle"]))
+        self._task_vars["s2_box"].set(str(d["s2_box"]))
         self._task_vars["s2_iti_min"].set(str(d["s2_iti_min"]))
         self._task_vars["s2_iti_max"].set(str(d["s2_iti_max"]))
         self._task_vars["cc_led_on_time"].set(str(d["cc_led_on_time"]))
         self._task_vars["cc_iti_min"].set(str(d["cc_iti_min"]))
         self._task_vars["cc_iti_max"].set(str(d["cc_iti_max"]))
         self._task_vars["cc_reward_prob"].set(str(d["cc_reward_prob"]))
+        self._task_vars["cc_delay"].set(str(d["cc_delay"]))
         self._task_vars["valve_time"].set(str(d["valve_time"]))
 
     def _on_mode_change(self):
@@ -432,30 +446,41 @@ class SMSetupDialog:
                 errors.append("Select at least one CC port for the task.")
 
             task = self._task_vars
+            s1_angle = s2_angle = None
             try:
                 s1_n        = int(task["s1_n"].get())
                 s1_duration = float(task["s1_duration"].get())
-                s1_angle    = int(task["s1_angle"].get())
+                s1_box      = int(task["s1_box"].get())
                 s1_iti_min  = float(task["s1_iti_min"].get())
                 s1_iti_max  = float(task["s1_iti_max"].get())
                 s2_n        = int(task["s2_n"].get())
                 s2_duration = float(task["s2_duration"].get())
-                s2_angle    = int(task["s2_angle"].get())
+                s2_box      = int(task["s2_box"].get())
                 s2_iti_min  = float(task["s2_iti_min"].get())
                 s2_iti_max  = float(task["s2_iti_max"].get())
                 cc_led      = float(task["cc_led_on_time"].get())
                 cc_iti_min  = float(task["cc_iti_min"].get())
                 cc_iti_max  = float(task["cc_iti_max"].get())
                 cc_prob     = float(task["cc_reward_prob"].get())
+                cc_delay    = float(task["cc_delay"].get())
                 valve_time  = float(task["valve_time"].get())
             except ValueError:
                 errors.append("All task parameters must be numbers.")
                 s1_n = None
 
-            if s1_n is not None and s1_n < 1:
-                errors.append("S1 must have at least 1 presentation.")
-            if s1_n is not None and s2_n < 0:
-                errors.append("S2 presentations cannot be negative.")
+            if s1_n is not None:
+                if s1_n < 1:
+                    errors.append("S1 must have at least 1 presentation.")
+                if s2_n < 0:
+                    errors.append("S2 presentations cannot be negative.")
+                if s1_box not in (0, 1, 2, 3):
+                    errors.append("S1 box must be 0, 1, 2, or 3.")
+                else:
+                    s1_angle = s1_box * 90
+                if s2_box not in (0, 1, 2, 3):
+                    errors.append("S2 box must be 0, 1, 2, or 3.")
+                else:
+                    s2_angle = s2_box * 90
 
             if errors:
                 messagebox.showerror("Input Error", "\n".join(errors))
@@ -470,11 +495,13 @@ class SMSetupDialog:
                 "baud":          baud,
                 "s1_n":          s1_n,
                 "s1_duration":   s1_duration,
+                "s1_box":        s1_box,
                 "s1_angle":      s1_angle,
                 "s1_iti_min":    s1_iti_min,
                 "s1_iti_max":    s1_iti_max,
                 "s2_n":          s2_n,
                 "s2_duration":   s2_duration,
+                "s2_box":        s2_box,
                 "s2_angle":      s2_angle,
                 "s2_iti_min":    s2_iti_min,
                 "s2_iti_max":    s2_iti_max,
@@ -483,6 +510,7 @@ class SMSetupDialog:
                 "cc_iti_min":    cc_iti_min,
                 "cc_iti_max":    cc_iti_max,
                 "cc_reward_prob":cc_prob,
+                "cc_delay":      cc_delay,
                 "valve_time":    valve_time,
                 "notes":         self._notes.get("1.0", "end").strip(),
             }

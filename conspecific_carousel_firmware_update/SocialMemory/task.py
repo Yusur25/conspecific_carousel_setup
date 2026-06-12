@@ -68,6 +68,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         cc_iti_min: float,
         cc_iti_max: float,
         cc_reward_prob: float = 1.0,
+        cc_delay: float = 0.0,
     ):
         super().__init__(ser, shared, species, valve_time)
         self.n_s1 = n_s1
@@ -87,6 +88,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         self.cc_iti_min = cc_iti_min
         self.cc_iti_max = cc_iti_max
         self.cc_reward_prob = cc_reward_prob
+        self.cc_delay = cc_delay
 
         self._current_angle = 0  # local table angle tracking (degrees)
 
@@ -255,7 +257,20 @@ class SocialMemoryTaskSession(BaseSMSession):
         self, iti_min: float, iti_max: float, period_label: str
     ) -> None:
         iti = random.uniform(iti_min, iti_max)
-        print(f"\n[INFO] {period_label}: CC ITI = {iti:.1f} s")
+        print(f"\n[INFO] {period_label}: CC ITI = {iti:.1f} s"
+              + (f" (CC starts after {self.cc_delay:.1f} s delay)" if self.cc_delay > 0 else ""))
+
+        # Idle delay before conditioning begins
+        if self.cc_delay > 0:
+            delay_deadline = time.time() + self.cc_delay
+            while self.running and not STOP_EVENT.is_set() and time.time() < delay_deadline:
+                time.sleep(0.05)
+            if not self.running or STOP_EVENT.is_set():
+                return
+
+        cc_duration = max(0.0, iti - self.cc_delay)
+        if cc_duration <= 0:
+            return
 
         cc = ClassicalConditioningSession(
             ser=self.ser,
@@ -267,7 +282,7 @@ class SocialMemoryTaskSession(BaseSMSession):
             iti_min=self.cc_iti_min,
             iti_max=self.cc_iti_max,
             reward_prob=self.cc_reward_prob,
-            session_duration=iti,
+            session_duration=cc_duration,
         )
         cc.start()
 

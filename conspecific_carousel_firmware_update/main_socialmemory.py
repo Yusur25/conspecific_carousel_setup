@@ -166,6 +166,7 @@ def main():
                 cc_iti_min=params["cc_iti_min"],
                 cc_iti_max=params["cc_iti_max"],
                 cc_reward_prob=params["cc_reward_prob"],
+                cc_delay=params.get("cc_delay", 0.0),
             )
             session.start()
             print("[INFO] Task started — Ctrl+C to stop")
