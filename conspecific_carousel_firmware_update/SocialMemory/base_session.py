@@ -28,13 +28,13 @@ class BaseSMSession:
         ser,
         shared: SharedSensorState,
         species: str,
-        valve_time: float,
+        valve_times: dict,
         session_duration: float = None,
     ):
         self.ser = ser
         self.shared = shared
         self.species = species
-        self.valve_time = valve_time
+        self.valve_times = valve_times
         self.session_duration = session_duration
 
         self.trial_counter = 0
@@ -93,12 +93,11 @@ class BaseSMSession:
 
     def _deliver_reward(self, port: str) -> float:
         """Deliver species-appropriate reward at port. Returns valve time used."""
+        vt = self.valve_times[port]
         if self.species == "rat":
-            return incremental_reward(
-                self.ser, port, self.valve_time, self.reward_count
-            )
-        deliver_reward(self.ser, port, self.valve_time)
-        return self.valve_time
+            return incremental_reward(self.ser, port, vt, self.reward_count)
+        deliver_reward(self.ser, port, vt)
+        return vt
 
     def _wait_for_table_contact(self):
         """Wait for table sensor to trigger; measure hold duration.

@@ -35,7 +35,7 @@ class ClassicalConditioningSession(BaseSMSession):
         ser,
         shared,
         species: str,
-        valve_time: float,
+        valve_times: dict,
         ports,               # list — e.g. ["A", "B"] or ["A", "B", "C"]
         led_on_time: float,
         iti_min: float,
@@ -43,7 +43,7 @@ class ClassicalConditioningSession(BaseSMSession):
         reward_prob: float = 1.0,
         session_duration: float = None,
     ):
-        super().__init__(ser, shared, species, valve_time, session_duration)
+        super().__init__(ser, shared, species, valve_times, session_duration)
         self.ports = list(ports)
         self.led_on_time = led_on_time
         self.ITI_MIN = iti_min

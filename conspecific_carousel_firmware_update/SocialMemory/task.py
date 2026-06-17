@@ -49,7 +49,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         ser,
         shared: SharedSensorState,
         species: str,
-        valve_time: float,
+        valve_times: dict,
         # S1 parameters
         n_s1: int,
         s1_duration: float,
@@ -70,7 +70,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         cc_reward_prob: float = 1.0,
         cc_delay: float = 0.0,
     ):
-        super().__init__(ser, shared, species, valve_time)
+        super().__init__(ser, shared, species, valve_times)
         self.n_s1 = n_s1
         self.s1_duration = s1_duration
         self.s1_angle = s1_angle
@@ -276,7 +276,7 @@ class SocialMemoryTaskSession(BaseSMSession):
             ser=self.ser,
             shared=self.shared,
             species=self.species,
-            valve_time=self.valve_time,
+            valve_times=self.valve_times,
             ports=self.cc_ports,
             led_on_time=self.cc_led_on_time,
             iti_min=self.cc_iti_min,

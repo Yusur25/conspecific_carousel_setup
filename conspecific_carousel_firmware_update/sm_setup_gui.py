@@ -15,7 +15,9 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 SPECIES_DEFAULTS = {
     "rat": {
-        "valve_time":       0.30,
+        "valve_time_A":     0.30,
+        "valve_time_B":     0.30,
+        "valve_time_C":     0.30,
         "session_duration": 3600,
         # Training CC
         "cc_led_on_time":   10.0,
@@ -37,7 +39,9 @@ SPECIES_DEFAULTS = {
         "s2_iti_max":       600.0,
     },
     "mouse": {
-        "valve_time":       0.20,
+        "valve_time_A":     0.20,
+        "valve_time_B":     0.20,
+        "valve_time_C":     0.20,
         "session_duration": 3600,
         "cc_led_on_time":   10.0,
         "cc_iti_min":        8.0,
@@ -217,16 +221,20 @@ class SMSetupDialog:
         self._cc_vars["iti_min"]       = tk.StringVar()
         self._cc_vars["iti_max"]       = tk.StringVar()
         self._cc_vars["reward_prob"]   = tk.StringVar()
-        self._cc_vars["valve_time"]    = tk.StringVar()
+        self._cc_vars["valve_time_A"]  = tk.StringVar()
+        self._cc_vars["valve_time_B"]  = tk.StringVar()
+        self._cc_vars["valve_time_C"]  = tk.StringVar()
         self._cc_vars["session_dur"]   = tk.StringVar()
 
         for i, (label, key) in enumerate([
-            ("LED on time (s):",    "led_on_time"),
-            ("ITI min (s):",        "iti_min"),
-            ("ITI max (s):",        "iti_max"),
-            ("Reward probability:", "reward_prob"),
-            ("Valve time (s):",     "valve_time"),
-            ("Session duration (s):","session_dur"),
+            ("LED on time (s):",      "led_on_time"),
+            ("ITI min (s):",          "iti_min"),
+            ("ITI max (s):",          "iti_max"),
+            ("Reward probability:",   "reward_prob"),
+            ("Valve time A (s):",     "valve_time_A"),
+            ("Valve time B (s):",     "valve_time_B"),
+            ("Valve time C (s):",     "valve_time_C"),
+            ("Session duration (s):", "session_dur"),
         ]):
             self._row(self._training_frame, label,
                       self._cc_vars[key], row=1 + i)
@@ -234,7 +242,7 @@ class SMSetupDialog:
         tk.Label(self._training_frame,
                  text="(leave duration blank for Ctrl+C stop)",
                  font=("Arial", 8), fg="gray").grid(
-            row=7, column=0, columnspan=4, sticky="w", padx=6)
+            row=9, column=0, columnspan=4, sticky="w", padx=6)
 
         # ── Task frame ────────────────────────────────────────────────────────
         self._task_frame = tk.LabelFrame(
@@ -304,20 +312,24 @@ class SMSetupDialog:
         self._task_vars["cc_iti_max"]     = tk.StringVar()
         self._task_vars["cc_reward_prob"] = tk.StringVar()
         self._task_vars["cc_delay"]       = tk.StringVar()
-        self._task_vars["valve_time"]     = tk.StringVar()
+        self._task_vars["valve_time_A"]   = tk.StringVar()
+        self._task_vars["valve_time_B"]   = tk.StringVar()
+        self._task_vars["valve_time_C"]   = tk.StringVar()
         for i, (label, key) in enumerate([
             ("CC LED on time (s):",  "cc_led_on_time"),
             ("CC trial ITI min (s):","cc_iti_min"),
             ("CC trial ITI max (s):","cc_iti_max"),
             ("Reward probability:",  "cc_reward_prob"),
             ("CC delay (s):",        "cc_delay"),
-            ("Valve time (s):",      "valve_time"),
+            ("Valve time A (s):",    "valve_time_A"),
+            ("Valve time B (s):",    "valve_time_B"),
+            ("Valve time C (s):",    "valve_time_C"),
         ]):
             self._row(ccf, label, self._task_vars[key], row=1 + i, width=10)
         tk.Label(ccf,
                  text="(CC delay: idle time before conditioning starts each ITI)",
                  font=("Arial", 8), fg="gray").grid(
-            row=7, column=0, columnspan=4, sticky="w", padx=4)
+            row=9, column=0, columnspan=4, sticky="w", padx=4)
 
         # ── Notes ─────────────────────────────────────────────────────────────
         ttk.Separator(root, orient="horizontal").grid(
@@ -345,7 +357,8 @@ class SMSetupDialog:
         self._cc_vars["iti_min"].set(str(d["cc_iti_min"]))
         self._cc_vars["iti_max"].set(str(d["cc_iti_max"]))
         self._cc_vars["reward_prob"].set(str(d["cc_reward_prob"]))
-        self._cc_vars["valve_time"].set(str(d["valve_time"]))
+        for p in "ABC":
+            self._cc_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
         self._cc_vars["session_dur"].set(str(d["session_duration"]))
 
         self._task_vars["s1_n"].set(str(d["s1_n"]))
@@ -363,7 +376,8 @@ class SMSetupDialog:
         self._task_vars["cc_iti_max"].set(str(d["cc_iti_max"]))
         self._task_vars["cc_reward_prob"].set(str(d["cc_reward_prob"]))
         self._task_vars["cc_delay"].set(str(d["cc_delay"]))
-        self._task_vars["valve_time"].set(str(d["valve_time"]))
+        for p in "ABC":
+            self._task_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
 
     def _on_mode_change(self):
         mode = self._mode_var.get()
@@ -399,14 +413,17 @@ class SMSetupDialog:
                 errors.append("Select at least one port for conditioning.")
 
             try:
-                led_on_time = float(self._cc_vars["led_on_time"].get())
-                iti_min     = float(self._cc_vars["iti_min"].get())
-                iti_max     = float(self._cc_vars["iti_max"].get())
-                reward_prob = float(self._cc_vars["reward_prob"].get())
-                valve_time  = float(self._cc_vars["valve_time"].get())
+                led_on_time  = float(self._cc_vars["led_on_time"].get())
+                iti_min      = float(self._cc_vars["iti_min"].get())
+                iti_max      = float(self._cc_vars["iti_max"].get())
+                reward_prob  = float(self._cc_vars["reward_prob"].get())
+                valve_time_A = float(self._cc_vars["valve_time_A"].get())
+                valve_time_B = float(self._cc_vars["valve_time_B"].get())
+                valve_time_C = float(self._cc_vars["valve_time_C"].get())
             except ValueError:
-                errors.append("LED on time, ITI, reward prob, and valve time must be numbers.")
-                led_on_time = iti_min = iti_max = reward_prob = valve_time = None
+                errors.append("LED on time, ITI, reward prob, and valve times must be numbers.")
+                led_on_time = iti_min = iti_max = reward_prob = None
+                valve_time_A = valve_time_B = valve_time_C = None
 
             if reward_prob is not None and not (0.0 < reward_prob <= 1.0):
                 errors.append("Reward probability must be between 0 (exclusive) and 1.")
@@ -435,7 +452,7 @@ class SMSetupDialog:
                 "iti_min":         iti_min,
                 "iti_max":         iti_max,
                 "reward_prob":     reward_prob,
-                "valve_time":      valve_time,
+                "valve_times":     {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
                 "session_duration":session_duration,
                 "notes":           self._notes.get("1.0", "end").strip(),
             }
@@ -458,12 +475,14 @@ class SMSetupDialog:
                 s2_box      = int(task["s2_box"].get())
                 s2_iti_min  = float(task["s2_iti_min"].get())
                 s2_iti_max  = float(task["s2_iti_max"].get())
-                cc_led      = float(task["cc_led_on_time"].get())
-                cc_iti_min  = float(task["cc_iti_min"].get())
-                cc_iti_max  = float(task["cc_iti_max"].get())
-                cc_prob     = float(task["cc_reward_prob"].get())
-                cc_delay    = float(task["cc_delay"].get())
-                valve_time  = float(task["valve_time"].get())
+                cc_led       = float(task["cc_led_on_time"].get())
+                cc_iti_min   = float(task["cc_iti_min"].get())
+                cc_iti_max   = float(task["cc_iti_max"].get())
+                cc_prob      = float(task["cc_reward_prob"].get())
+                cc_delay     = float(task["cc_delay"].get())
+                valve_time_A = float(task["valve_time_A"].get())
+                valve_time_B = float(task["valve_time_B"].get())
+                valve_time_C = float(task["valve_time_C"].get())
             except ValueError:
                 errors.append("All task parameters must be numbers.")
                 s1_n = None
@@ -511,7 +530,7 @@ class SMSetupDialog:
                 "cc_iti_max":    cc_iti_max,
                 "cc_reward_prob":cc_prob,
                 "cc_delay":      cc_delay,
-                "valve_time":    valve_time,
+                "valve_times":   {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
                 "notes":         self._notes.get("1.0", "end").strip(),
             }
 
