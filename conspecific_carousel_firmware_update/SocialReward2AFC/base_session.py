@@ -19,6 +19,7 @@ from hardware import (
     deliver_reward,
     incremental_reward,
     sensor_held,
+    shutdown_outputs,
     SharedSensorState,
     STOP_EVENT,
 )
@@ -82,7 +83,14 @@ class Base2AFCSession:
                     break
             self.trial_counter += 1
             print(f"\n=== Trial {self.trial_counter} ===")
-            self._run_trial()
+            try:
+                self._run_trial()
+            except TimeoutError as e:
+                print(f"[ERROR] Trial {self.trial_counter} aborted — serial timeout: {e}")
+                try:
+                    shutdown_outputs(self.ser)
+                except TimeoutError:
+                    print("[ERROR] Device unresponsive — could not confirm outputs off")
             if self.max_trials is not None and self.trial_counter >= self.max_trials:
                 print(f"[INFO] Trial limit ({self.max_trials}) reached")
                 break
