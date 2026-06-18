@@ -3,7 +3,8 @@
     "allow": [
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\cmazu\\\\Documents\\\\GitHub\\\\conspecific_carousel_firmware_update\" -Recurse -Filter \"*.py\")",
       "Bash(Sort-Object FullName)",
-      "Bash(Format-Table FullName)"
+      "Bash(Format-Table FullName)",
+      "Bash(python -m py_compile SocialMemory/base_session.py SocialMemory/training.py SocialMemory/task.py main_socialmemory.py)"
     ]
   }
 }

@@ -8,6 +8,8 @@ import random
 import threading
 import time
 
+import pandas as pd
+
 from hardware import (
     deliver_reward,
     incremental_reward,
@@ -42,6 +44,10 @@ class BaseSMSession:
         self.max_trials = None
         self.running = False
         self.thread = None
+
+        # Guards reads/writes of results dataframes shared between the
+        # session thread (appends rows) and the main thread (polls for the GUI).
+        self._df_lock = threading.Lock()
 
     # ── Session control ───────────────────────────────────────────────────────
 
@@ -88,6 +94,12 @@ class BaseSMSession:
 
     def _run_trial(self):
         raise NotImplementedError
+
+    def snapshot(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Thread-safe copy of a results dataframe, for reading from the main thread
+        while the session thread may be appending rows to it."""
+        with self._df_lock:
+            return df.copy()
 
     # ── Shared helpers ────────────────────────────────────────────────────────
 

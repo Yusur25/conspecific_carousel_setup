@@ -161,16 +161,17 @@ class ClassicalConditioningSession(BaseSMSession):
 
     def _log(self, port, forced, reward_triggered, reward_prob_applied,
              trial_start, trial_end, rt, iti, valve_time_used):
-        self.results_df.loc[len(self.results_df)] = {
-            "trial_num":           self.trial_counter,
-            "port":                port,
-            "forced":              forced,
-            "reward_triggered":    reward_triggered,
-            "reward_prob_applied": reward_prob_applied,
-            "trial_start":         trial_start,
-            "trial_end":           trial_end,
-            "rt":                  rt,
-            "iti":                 iti,
-            "valve_time":          valve_time_used,
-        }
-        print(self.results_df.iloc[-1].to_dict())
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = {
+                "trial_num":           self.trial_counter,
+                "port":                port,
+                "forced":              forced,
+                "reward_triggered":    reward_triggered,
+                "reward_prob_applied": reward_prob_applied,
+                "trial_start":         trial_start,
+                "trial_end":           trial_end,
+                "rt":                  rt,
+                "iti":                 iti,
+                "valve_time":          valve_time_used,
+            }
+            print(self.results_df.iloc[-1].to_dict())

@@ -240,15 +240,16 @@ class SocialMemoryTaskSession(BaseSMSession):
         wait_for_table_stopped(self.shared)
 
         # Log
-        self.presentations_df.loc[len(self.presentations_df)] = {
-            "presentation_num":    self._presentation_counter,
-            "period":              period,
-            "angle":               angle,
-            "presentation_duration": duration,
-            "sampling_time":       contact_time,
-            "presentation_start":  pres_start,
-            "presentation_end":    pres_end,
-        }
+        with self._df_lock:
+            self.presentations_df.loc[len(self.presentations_df)] = {
+                "presentation_num":    self._presentation_counter,
+                "period":              period,
+                "angle":               angle,
+                "presentation_duration": duration,
+                "sampling_time":       contact_time,
+                "presentation_start":  pres_start,
+                "presentation_end":    pres_end,
+            }
         print(f"[INFO] {period}: door closed, table stopped")
 
     # ── CC ITI ────────────────────────────────────────────────────────────────
@@ -292,11 +293,12 @@ class SocialMemoryTaskSession(BaseSMSession):
         cc.stop_internal()
 
         if not cc.results_df.empty:
-            df = cc.results_df.copy()
+            df = cc.results_df.copy()  # cc's thread already joined above, safe to read directly
             df["iti_period"] = period_label
-            self.conditioning_df = pd.concat(
-                [self.conditioning_df, df], ignore_index=True
-            )
+            with self._df_lock:
+                self.conditioning_df = pd.concat(
+                    [self.conditioning_df, df], ignore_index=True
+                )
             # Keep global CC reward count in sync
             self.reward_count = cc.reward_count
 

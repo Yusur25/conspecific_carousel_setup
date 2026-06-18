@@ -48,7 +48,7 @@ def _run_loop_training(session, shared, sensor_gui, perf_gui,
             break
         snap = shared.get()
         sensor_gui.update(snap)
-        perf_gui.update(session.results_df)
+        perf_gui.update(session.snapshot(session.results_df))
         time.sleep(0.05)
 
 
@@ -57,7 +57,8 @@ def _run_loop_task(session, shared, sensor_gui, perf_gui):
     while session.running and not STOP_EVENT.is_set():
         snap = shared.get()
         sensor_gui.update(snap)
-        perf_gui.update(session.presentations_df, session.conditioning_df)
+        perf_gui.update(session.snapshot(session.presentations_df),
+                         session.snapshot(session.conditioning_df))
         time.sleep(0.05)
 
 
@@ -187,7 +188,7 @@ def main():
                 session.results_df.to_csv(csv_path, index=False)
                 print(f"[INFO] Trials saved: {csv_path}")
                 # Final GUI update
-                perf_gui.update(session.results_df)
+                perf_gui.update(session.snapshot(session.results_df))
 
             elif mode == "task":
                 pres_path = os.path.join(BASE_SAVE_DIR, "presentations.csv")
@@ -196,7 +197,8 @@ def main():
                 session.conditioning_df.to_csv(cc_path, index=False)
                 print(f"[INFO] Presentations saved: {pres_path}")
                 print(f"[INFO] Conditioning trials saved: {cc_path}")
-                perf_gui.update(session.presentations_df, session.conditioning_df)
+                perf_gui.update(session.snapshot(session.presentations_df),
+                                 session.snapshot(session.conditioning_df))
 
         # Return turntable to home after task (task uses turntable)
         if mode == "task" and session is not None:
