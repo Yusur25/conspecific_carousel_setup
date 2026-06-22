@@ -318,5 +318,5 @@ class SocialMemoryTaskSession(BaseSMSession):
 
     def _turn_ccw_partial(self, degrees: int) -> None:
         """Turn CCW by degrees. Called in a daemon thread."""
-        turn_table_degrees(self.ser, -degrees)
+        turn_table_degrees(self.ser, degrees)   # positive: physical CCW (see _turn_to)
         self._current_angle = (self._current_angle - degrees) % 360
