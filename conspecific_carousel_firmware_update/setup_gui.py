@@ -4,6 +4,8 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from utils import parse_motor_speed
+
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialreward_last_settings.json")
 
@@ -27,6 +29,9 @@ SPECIES_DEFAULTS = {
         "4stim_box1_freq":  5, "4stim_box1_reward": "-",
         "4stim_box2_freq":  5, "4stim_box2_reward": "-",
         "4stim_box3_freq": 40, "4stim_box3_reward": "+",
+        "door_open_speed":  255,
+        "door_close_speed": 40,
+        "table_speed":      40,
     },
     "mouse": {
         "valve_time": 0.20,
@@ -47,6 +52,9 @@ SPECIES_DEFAULTS = {
         "4stim_box1_freq":  5, "4stim_box1_reward": "-",
         "4stim_box2_freq":  5, "4stim_box2_reward": "-",
         "4stim_box3_freq": 40, "4stim_box3_reward": "+",
+        "door_open_speed":  255,
+        "door_close_speed": 40,
+        "table_speed":      40,
     },
 }
 
@@ -217,6 +225,20 @@ class SetupDialog:
                  width=5).pack(side="left")
         tk.Label(dur_frame, text=" trials  (first reached ends session)").pack(side="left")
 
+        # Motor speeds (0-255)
+        for i, (label, key) in enumerate([
+            ("Door Open Speed (0-255):",  "door_open_speed"),
+            ("Door Close Speed (0-255):", "door_close_speed"),
+            ("Turntable Speed (0-255):",  "table_speed"),
+        ]):
+            var = tk.StringVar()
+            self._timing_vars[key] = var
+            self._row(timing_frame, label, var, row=2 + i)
+        tk.Label(timing_frame,
+                 text="(blank or 'off' = leave unset — for firmware without speed control)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2))
+
         # ── Sensory Minimum only (phases 2 and 3a) ───────────────────────────
         self._sm_frame = tk.LabelFrame(root, text="Phase Parameters", padx=8, pady=4)
         self._sm_frame.grid(row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
@@ -349,6 +371,9 @@ class SetupDialog:
         self._timing_vars["valve_time"].set(str(d["valve_time"]))
         self._timing_vars["session_duration_s"].set(str(d["session_duration_s"]))
         self._timing_vars["session_duration_trials"].set(str(d["session_duration_trials"]))
+        self._timing_vars["door_open_speed"].set(str(d["door_open_speed"]))
+        self._timing_vars["door_close_speed"].set(str(d["door_close_speed"]))
+        self._timing_vars["table_speed"].set(str(d["table_speed"]))
         self._timing_vars["sensory_minimum"].set(str(d["sensory_minimum"]))
         self._timing_vars["phase4_sensory_min"].set(str(d["phase4_sensory_min"]))
         self._timing_vars["phase4_decision_window"].set(str(d["phase4_decision_window"]))
@@ -456,6 +481,14 @@ class SetupDialog:
         except ValueError:
             errors.append("Valve time must be a number.")
             valve_time = None
+
+        try:
+            door_open_speed = parse_motor_speed(self._timing_vars["door_open_speed"].get())
+            door_close_speed = parse_motor_speed(self._timing_vars["door_close_speed"].get())
+            table_speed = parse_motor_speed(self._timing_vars["table_speed"].get())
+        except ValueError:
+            errors.append("Motor speeds must be integers (0-255), or blank/'off' to leave unset.")
+            door_open_speed = door_close_speed = table_speed = None
 
         # Session duration — at least one of time or trials must be set
         duration_s_str = self._timing_vars["session_duration_s"].get().strip()
@@ -569,6 +602,9 @@ class SetupDialog:
             "port": port,
             "baud": baud,
             "valve_time": valve_time,
+            "door_open_speed": door_open_speed,
+            "door_close_speed": door_close_speed,
+            "table_speed": table_speed,
             "session_duration_s": session_duration_s,
             "session_duration_trials": session_duration_trials,
             "sensory_minimum": sensory_minimum,

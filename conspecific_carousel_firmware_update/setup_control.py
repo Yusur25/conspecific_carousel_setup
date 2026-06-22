@@ -15,6 +15,7 @@ from protocol import (
     REG_PB_LED, REG_PB_VALVE,
     REG_PC_LED, REG_PC_VALVE,
     REG_DOOR_CMD, REG_TABLE_CMD,
+    REG_DOOR_OPN_SPD, REG_DOOR_CLS_SPD, REG_TABLE_SPD,
     build_table_command,
     reg_name, format_value,
 )
@@ -25,6 +26,11 @@ BAUDRATE = 115200
 # Turntable value for 90 degrees (= 2 eighths of a turn)
 TABLE_90_CW  = build_table_command(0, 2)
 TABLE_90_CCW = build_table_command(1, 2)
+
+# Default motor speeds (0-255), matching firmware defaults
+DOOR_OPEN_SPEED_DEFAULT = 255
+DOOR_CLOSE_SPEED_DEFAULT = 40
+TABLE_SPEED_DEFAULT = 40
 
 
 class App(tk.Tk):
@@ -101,9 +107,50 @@ class App(tk.Tk):
         ttk.Button(table_frame, text="90° CCW", width=10,
                    command=lambda: self._write(REG_TABLE_CMD, TABLE_90_CCW)).grid(row=0, column=1, **pad)
 
+        # Motor speeds
+        speed_frame = ttk.LabelFrame(self, text="Motor Speeds (0-255)")
+        speed_frame.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
+
+        speed_defs = [
+            ("Door Open",  REG_DOOR_OPN_SPD, DOOR_OPEN_SPEED_DEFAULT),
+            ("Door Close", REG_DOOR_CLS_SPD, DOOR_CLOSE_SPEED_DEFAULT),
+            ("Turntable",  REG_TABLE_SPD,    TABLE_SPEED_DEFAULT),
+        ]
+        self.speed_vars = {}
+        self.speed_enabled_vars = {}
+        for i, (label, reg, default) in enumerate(speed_defs):
+            ttk.Label(speed_frame, text=label, width=10).grid(row=i, column=0, **pad)
+            var = tk.IntVar(value=default)
+            self.speed_vars[reg] = var
+            value_lbl = ttk.Label(speed_frame, text=str(default), width=4)
+
+            def _on_move(raw_value, var=var, lbl=value_lbl):
+                iv = round(float(raw_value))
+                var.set(iv)
+                lbl.config(text=str(iv))
+
+            scale = ttk.Scale(speed_frame, from_=0, to=255, orient="horizontal",
+                               length=200, command=_on_move)
+            scale.set(default)
+            scale.grid(row=i, column=1, **pad)
+            value_lbl.grid(row=i, column=2, **pad)
+
+            enabled_var = tk.BooleanVar(value=True)
+            self.speed_enabled_vars[reg] = enabled_var
+            ttk.Checkbutton(speed_frame, text="Enabled", variable=enabled_var).grid(
+                row=i, column=3, **pad)
+
+            scale.bind("<ButtonRelease-1>",
+                       lambda _e, r=reg, vv=var: self._write_speed(r, vv.get()))
+
+        ttk.Label(speed_frame,
+                  text="Uncheck 'Enabled' for firmware without speed-register support.",
+                  font=("Arial", 8), foreground="gray").grid(
+            row=len(speed_defs), column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+
         # Log
         log_frame = ttk.LabelFrame(self, text="Log")
-        log_frame.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
+        log_frame.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
 
         self.log_text = tk.Text(log_frame, height=10, width=62, state="disabled", font=("Courier", 9))
         self.log_text.grid(row=0, column=0, **pad)
@@ -139,6 +186,8 @@ class App(tk.Tk):
             self.connect_btn.config(text="Disconnect")
             self.port_combo.config(state="disabled")
             self._log(f"Connected to {port} @ {BAUDRATE} baud")
+            for reg, var in self.speed_vars.items():
+                self._write_speed(reg, var.get())
         except Exception as e:
             messagebox.showerror("Connection Error", str(e))
 
@@ -165,6 +214,14 @@ class App(tk.Tk):
                 self._log(f"[ERROR] {e}")
 
         threading.Thread(target=_do, daemon=True).start()
+
+    def _write_speed(self, register: int, value: int) -> None:
+        """Write a motor-speed register, unless its 'Enabled' checkbox is off
+        (for old firmware builds that don't implement the speed registers)."""
+        if not self.speed_enabled_vars[register].get():
+            self._log(f"[INFO] {reg_name(register)} disabled — not sent (old firmware mode)")
+            return
+        self._write(register, value)
 
     def _reward_pulse(self, valve_reg: int) -> None:
         if not self.conn or not self.conn.is_connected:

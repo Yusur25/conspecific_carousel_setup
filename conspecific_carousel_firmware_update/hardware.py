@@ -21,7 +21,8 @@ from protocol import (
     REG_PC_LED, REG_PC_VALVE, REG_PC_IR,
     REG_DOOR_SENSOR, REG_TABLE_SENSOR,
     REG_DOOR_STATUS, REG_DOOR_CMD,
-    REG_TABLE_STATUS, REG_TABLE_CMD,
+    REG_DOOR_OPN_SPD, REG_DOOR_CLS_SPD,
+    REG_TABLE_STATUS, REG_TABLE_CMD, REG_TABLE_SPD,
     build_table_command,
 )
 from serial_comm import DeviceConnection
@@ -293,6 +294,39 @@ def shutdown_outputs(device: DeviceConnection) -> None:
     for p in ("A", "B", "C"):
         device.write_register(PORT_REGS[p]["led"], 0)
         device.write_register(PORT_REGS[p]["valve"], 0)
+
+
+# ── Motor speed control ────────────────────────────────────────────────────────
+#
+# Speed values are single bytes (0-255) written to the firmware's speed
+# registers. They persist on the device until changed again, so setting them
+# once before a session (or once per move) is sufficient.
+
+def set_door_open_speed(device: DeviceConnection, speed: int) -> None:
+    device.write_register(REG_DOOR_OPN_SPD, int(speed))
+
+
+def set_door_close_speed(device: DeviceConnection, speed: int) -> None:
+    device.write_register(REG_DOOR_CLS_SPD, int(speed))
+
+
+def set_table_speed(device: DeviceConnection, speed: int) -> None:
+    device.write_register(REG_TABLE_SPD, int(speed))
+
+
+def apply_motor_speeds(
+    device: DeviceConnection,
+    door_open_speed: Optional[int] = None,
+    door_close_speed: Optional[int] = None,
+    table_speed: Optional[int] = None,
+) -> None:
+    """Write any of the provided motor speeds to the device. None values are skipped."""
+    if door_open_speed is not None:
+        set_door_open_speed(device, door_open_speed)
+    if door_close_speed is not None:
+        set_door_close_speed(device, door_close_speed)
+    if table_speed is not None:
+        set_table_speed(device, table_speed)
 
 
 # ── Table movement ────────────────────────────────────────────────────────────

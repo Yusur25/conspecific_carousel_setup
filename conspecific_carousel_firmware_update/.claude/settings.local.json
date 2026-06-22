@@ -4,7 +4,10 @@
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\cmazu\\\\Documents\\\\GitHub\\\\conspecific_carousel_firmware_update\" -Recurse -Filter \"*.py\")",
       "Bash(Sort-Object FullName)",
       "Bash(Format-Table FullName)",
-      "Bash(python -m py_compile SocialMemory/base_session.py SocialMemory/training.py SocialMemory/task.py main_socialmemory.py)"
+      "Bash(python -m py_compile SocialMemory/base_session.py SocialMemory/training.py SocialMemory/task.py main_socialmemory.py)",
+      "Bash(python -m py_compile protocol.py hardware.py setup_control.py setup_gui.py sm_setup_gui.py sc_setup_gui.py setup_gui_2AFC.py main_socialreward.py main_socialmemory.py main_socialchoice.py main_socialreward2AFC.py)",
+      "Bash(python -)",
+      "Bash(python -m py_compile utils.py setup_gui.py sm_setup_gui.py sc_setup_gui.py setup_gui_2AFC.py setup_control.py hardware.py)"
     ]
   }
 }

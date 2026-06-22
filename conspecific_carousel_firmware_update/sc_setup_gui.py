@@ -4,6 +4,8 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from utils import parse_motor_speed
+
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialchoice_last_settings.json")
 
@@ -17,6 +19,9 @@ SPECIES_DEFAULTS = {
         "decision_window":    5.0,
         "social_angle":       90,
         "social_duration":    10.0,
+        "door_open_speed":    255,
+        "door_close_speed":   40,
+        "table_speed":        40,
     },
     "mouse": {
         "valve_time":         0.20,
@@ -27,6 +32,9 @@ SPECIES_DEFAULTS = {
         "decision_window":    5.0,
         "social_angle":       90,
         "social_duration":    10.0,
+        "door_open_speed":    255,
+        "door_close_speed":   40,
+        "table_speed":        40,
     },
 }
 
@@ -164,6 +172,19 @@ class SCSetupDialog:
                  width=5).pack(side="left")
         tk.Label(dur_f, text=" trials").pack(side="left")
 
+        # Motor speeds (0-255)
+        for i, (label, key) in enumerate([
+            ("Door Open Speed (0-255):",  "door_open_speed"),
+            ("Door Close Speed (0-255):", "door_close_speed"),
+            ("Turntable Speed (0-255):",  "table_speed"),
+        ]):
+            self._timing_vars[key] = tk.StringVar()
+            self._row(tf, label, self._timing_vars[key], row=4 + i)
+        tk.Label(tf,
+                 text="(blank or 'off' = leave unset — for firmware without speed control)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=7, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 2))
+
         # One-choice frame (decision_window only)
         self._onechoice_frame = tk.LabelFrame(
             root, text="Phase Parameters", padx=8, pady=4)
@@ -214,7 +235,8 @@ class SCSetupDialog:
         d  = SPECIES_DEFAULTS[sp]
         for key in ("valve_time", "iti_min", "iti_max",
                     "session_duration_s", "session_duration_t",
-                    "decision_window", "social_angle", "social_duration"):
+                    "decision_window", "social_angle", "social_duration",
+                    "door_open_speed", "door_close_speed", "table_speed"):
             self._timing_vars[key].set(str(d.get(key, "")))
         # Mirror decision_window into the two-choice field
         self._timing_vars["decision_window_2"].set(
@@ -255,6 +277,14 @@ class SCSetupDialog:
         except ValueError:
             errors.append("Valve time and ITI must be numbers.")
             valve_time = iti_min = iti_max = None
+
+        try:
+            door_open_speed = parse_motor_speed(self._timing_vars["door_open_speed"].get())
+            door_close_speed = parse_motor_speed(self._timing_vars["door_close_speed"].get())
+            table_speed = parse_motor_speed(self._timing_vars["table_speed"].get())
+        except ValueError:
+            errors.append("Motor speeds must be integers (0-255), or blank/'off' to leave unset.")
+            door_open_speed = door_close_speed = table_speed = None
 
         # Session duration
         dur_s_str = self._timing_vars["session_duration_s"].get().strip()
@@ -303,6 +333,9 @@ class SCSetupDialog:
             "port":              port,
             "baud":              baud,
             "valve_time":        valve_time,
+            "door_open_speed":   door_open_speed,
+            "door_close_speed":  door_close_speed,
+            "table_speed":       table_speed,
             "iti_min":           iti_min,
             "iti_max":           iti_max,
             "session_duration_s":session_duration_s,

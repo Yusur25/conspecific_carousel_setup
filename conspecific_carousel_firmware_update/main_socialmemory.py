@@ -16,7 +16,10 @@ import json
 from datetime import datetime
 
 from serial_comm import DeviceConnection
-from hardware import SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs, turn_table_degrees
+from hardware import (
+    SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs,
+    turn_table_degrees, apply_motor_speeds,
+)
 from sm_setup_gui import SMSetupDialog
 
 
@@ -106,6 +109,13 @@ def main():
     except Exception as e:
         print(f"[ERROR] Cannot open serial port: {e}")
         return
+
+    apply_motor_speeds(
+        device,
+        door_open_speed=params.get("door_open_speed"),
+        door_close_speed=params.get("door_close_speed"),
+        table_speed=params.get("table_speed"),
+    )
 
     # ── Shared state + event logger ───────────────────────────────────────────
     shared = SharedSensorState()

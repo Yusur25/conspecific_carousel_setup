@@ -10,6 +10,8 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from utils import parse_motor_speed
+
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialmemory_last_settings.json")
 
@@ -37,6 +39,9 @@ SPECIES_DEFAULTS = {
         "s2_box":             3,
         "s2_iti_min":       600.0,
         "s2_iti_max":       600.0,
+        "door_open_speed":  255,
+        "door_close_speed": 40,
+        "table_speed":      40,
     },
     "mouse": {
         "valve_time_A":     0.20,
@@ -58,6 +63,9 @@ SPECIES_DEFAULTS = {
         "s2_box":             3,
         "s2_iti_min":       300.0,
         "s2_iti_max":       300.0,
+        "door_open_speed":  255,
+        "door_close_speed": 40,
+        "table_speed":      40,
     },
 }
 
@@ -76,6 +84,7 @@ class SMSetupDialog:
         self._port_vars   = {}          # port checkboxes
         self._cc_vars     = {}          # CC parameters
         self._task_vars   = {}          # task-specific parameters
+        self._speed_vars  = {}          # motor speed parameters
 
         self._training_frame = None
         self._task_frame     = None
@@ -98,6 +107,8 @@ class SMSetupDialog:
             s[f"cc_{k}"] = v.get()
         for k, v in self._task_vars.items():
             s[f"task_{k}"] = v.get()
+        for k, v in self._speed_vars.items():
+            s[f"speed_{k}"] = v.get()
         for port, v in self._port_vars.items():
             s[f"port_{port}"] = v.get()
         for port, v in self._task_port_vars.items():
@@ -129,6 +140,9 @@ class SMSetupDialog:
         for k, v in self._task_vars.items():
             if f"task_{k}" in s:
                 v.set(s[f"task_{k}"])
+        for k, v in self._speed_vars.items():
+            if f"speed_{k}" in s:
+                v.set(s[f"speed_{k}"])
         for port, v in self._port_vars.items():
             if f"port_{port}" in s:
                 v.set(s[f"port_{port}"])
@@ -199,11 +213,30 @@ class SMSetupDialog:
         ttk.Separator(root, orient="horizontal").grid(
             row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
+        # ── Motor speeds (always visible) ─────────────────────────────────────
+        speed_frame = tk.LabelFrame(root, text="Motor Speeds (0-255)", padx=8, pady=6)
+        speed_frame.grid(row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        for i, (label, key) in enumerate([
+            ("Door Open Speed:",  "door_open_speed"),
+            ("Door Close Speed:", "door_close_speed"),
+            ("Turntable Speed:",  "table_speed"),
+        ]):
+            var = tk.StringVar()
+            self._speed_vars[key] = var
+            self._row(speed_frame, label, var, row=i, width=10)
+        tk.Label(speed_frame,
+                 text="(blank or 'off' = leave unset — for firmware without speed control)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+
+        ttk.Separator(root, orient="horizontal").grid(
+            row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+
         # ── Training frame ────────────────────────────────────────────────────
         self._training_frame = tk.LabelFrame(
             root, text="Training Parameters", padx=8, pady=6)
         self._training_frame.grid(
-            row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # Port selection checkboxes
         tk.Label(self._training_frame, text="Ports:", anchor="w").grid(
@@ -248,7 +281,7 @@ class SMSetupDialog:
         self._task_frame = tk.LabelFrame(
             root, text="Task Parameters", padx=8, pady=6)
         self._task_frame.grid(
-            row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # S1 sub-frame
         s1f = tk.LabelFrame(self._task_frame, text="S1 (familiar stimulus)",
@@ -333,15 +366,15 @@ class SMSetupDialog:
 
         # ── Notes ─────────────────────────────────────────────────────────────
         ttk.Separator(root, orient="horizontal").grid(
-            row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         tk.Label(root, text="Notes:", anchor="w").grid(
-            row=12, column=0, sticky="nw", **pad)
+            row=14, column=0, sticky="nw", **pad)
         self._notes = tk.Text(root, width=40, height=3, font=("Arial", 9))
-        self._notes.grid(row=12, column=1, columnspan=3, sticky="ew", **pad)
+        self._notes.grid(row=14, column=1, columnspan=3, sticky="ew", **pad)
 
         # ── Buttons ───────────────────────────────────────────────────────────
         bf = tk.Frame(root)
-        bf.grid(row=13, column=0, columnspan=4, pady=(8, 14))
+        bf.grid(row=15, column=0, columnspan=4, pady=(8, 14))
         tk.Button(bf, text="Start Session", bg="#4CAF50", fg="white",
                   font=("Arial", 11, "bold"), width=18,
                   command=self._on_start).pack(side="left", padx=8)
@@ -360,6 +393,10 @@ class SMSetupDialog:
         for p in "ABC":
             self._cc_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
         self._cc_vars["session_dur"].set(str(d["session_duration"]))
+
+        self._speed_vars["door_open_speed"].set(str(d["door_open_speed"]))
+        self._speed_vars["door_close_speed"].set(str(d["door_close_speed"]))
+        self._speed_vars["table_speed"].set(str(d["table_speed"]))
 
         self._task_vars["s1_n"].set(str(d["s1_n"]))
         self._task_vars["s1_duration"].set(str(d["s1_duration"]))
@@ -407,6 +444,14 @@ class SMSetupDialog:
             errors.append("Baud rate must be an integer.")
             baud = None
 
+        try:
+            door_open_speed = parse_motor_speed(self._speed_vars["door_open_speed"].get())
+            door_close_speed = parse_motor_speed(self._speed_vars["door_close_speed"].get())
+            table_speed = parse_motor_speed(self._speed_vars["table_speed"].get())
+        except ValueError:
+            errors.append("Motor speeds must be integers (0-255), or blank/'off' to leave unset.")
+            door_open_speed = door_close_speed = table_speed = None
+
         if mode == "training":
             ports = [p for p in ("A", "B", "C") if self._port_vars[p].get()]
             if not ports:
@@ -447,6 +492,9 @@ class SMSetupDialog:
                 "session_n":       session_n,
                 "port":            port,
                 "baud":            baud,
+                "door_open_speed": door_open_speed,
+                "door_close_speed": door_close_speed,
+                "table_speed":     table_speed,
                 "ports":           ports,
                 "led_on_time":     led_on_time,
                 "iti_min":         iti_min,
@@ -512,6 +560,9 @@ class SMSetupDialog:
                 "session_n":     session_n,
                 "port":          port,
                 "baud":          baud,
+                "door_open_speed": door_open_speed,
+                "door_close_speed": door_close_speed,
+                "table_speed":     table_speed,
                 "s1_n":          s1_n,
                 "s1_duration":   s1_duration,
                 "s1_box":        s1_box,
