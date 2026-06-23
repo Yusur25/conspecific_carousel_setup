@@ -20,6 +20,7 @@ from protocol import (
     reg_name, format_value,
 )
 from serial_comm import DeviceConnection, list_serial_ports
+from gui_utils import make_scrollable, fit_window_to_screen
 
 BAUDRATE = 115200
 
@@ -37,18 +38,21 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Carousel Setup Control")
-        self.resizable(False, False)
+        self.resizable(False, True)
         self.conn: DeviceConnection | None = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        fit_window_to_screen(self._scroll_body)
 
     # ------------------------------------------------------------------ UI --
 
     def _build_ui(self):
+        body = make_scrollable(self)
+        self._scroll_body = body
         pad = dict(padx=6, pady=4)
 
         # Connection panel
-        conn_frame = ttk.LabelFrame(self, text="Connection")
+        conn_frame = ttk.LabelFrame(body, text="Connection")
         conn_frame.grid(row=0, column=0, columnspan=2, sticky="ew", **pad)
 
         ttk.Label(conn_frame, text="COM Port:").grid(row=0, column=0, **pad)
@@ -63,7 +67,7 @@ class App(tk.Tk):
         self._refresh_ports()
 
         # LEDs
-        led_frame = ttk.LabelFrame(self, text="LEDs")
+        led_frame = ttk.LabelFrame(body, text="LEDs")
         led_frame.grid(row=1, column=0, sticky="nsew", **pad)
 
         led_defs = [("LED A", REG_PA_LED), ("LED B", REG_PB_LED), ("LED C", REG_PC_LED)]
@@ -75,7 +79,7 @@ class App(tk.Tk):
                        command=lambda r=reg: self._write(r, 0)).grid(row=i, column=2, **pad)
 
         # Reward delivery
-        reward_frame = ttk.LabelFrame(self, text="Reward Delivery")
+        reward_frame = ttk.LabelFrame(body, text="Reward Delivery")
         reward_frame.grid(row=2, column=0, sticky="nsew", **pad)
 
         ttk.Label(reward_frame, text="Duration (ms):").grid(row=0, column=0, columnspan=2, **pad)
@@ -90,7 +94,7 @@ class App(tk.Tk):
                            row=i + 1, column=0, columnspan=3, sticky="ew", **pad)
 
         # Door
-        door_frame = ttk.LabelFrame(self, text="Door")
+        door_frame = ttk.LabelFrame(body, text="Door")
         door_frame.grid(row=1, column=1, sticky="nsew", **pad)
 
         ttk.Button(door_frame, text="Open",  width=10,
@@ -99,7 +103,7 @@ class App(tk.Tk):
                    command=lambda: self._write(REG_DOOR_CMD, 0x01)).grid(row=0, column=1, **pad)
 
         # Turntable
-        table_frame = ttk.LabelFrame(self, text="Turntable (90°)")
+        table_frame = ttk.LabelFrame(body, text="Turntable (90°)")
         table_frame.grid(row=2, column=1, sticky="nsew", **pad)
 
         ttk.Button(table_frame, text="90° CW",  width=10,
@@ -108,7 +112,7 @@ class App(tk.Tk):
                    command=lambda: self._write(REG_TABLE_CMD, TABLE_90_CCW)).grid(row=0, column=1, **pad)
 
         # Motor speeds
-        speed_frame = ttk.LabelFrame(self, text="Motor Speeds (0-255)")
+        speed_frame = ttk.LabelFrame(body, text="Motor Speeds (0-255)")
         speed_frame.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
 
         speed_defs = [
@@ -149,7 +153,7 @@ class App(tk.Tk):
             row=len(speed_defs), column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
 
         # Log
-        log_frame = ttk.LabelFrame(self, text="Log")
+        log_frame = ttk.LabelFrame(body, text="Log")
         log_frame.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
 
         self.log_text = tk.Text(log_frame, height=10, width=62, state="disabled", font=("Courier", 9))

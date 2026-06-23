@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from utils import parse_motor_speed
+from gui_utils import make_scrollable, fit_window_to_screen
 
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialreward_last_settings.json")
@@ -66,7 +67,7 @@ class SetupDialog:
         self.result = None
         self.root = tk.Tk()
         self.root.title("Social Reward Task — Session Setup")
-        self.root.resizable(False, False)
+        self.root.resizable(False, True)
 
         self._species_var = tk.StringVar(value="rat")
         self._vars = {}
@@ -83,6 +84,7 @@ class SetupDialog:
         self._on_species_change()
         self._on_phase_change()
         self._apply_saved_settings()
+        fit_window_to_screen(self._scroll_body)
 
     # ── Settings persistence ──────────────────────────────────────────────────
 
@@ -145,7 +147,8 @@ class SetupDialog:
             row=row, column=1, sticky="w", **pad)
 
     def _build_ui(self):
-        root = self.root
+        root = make_scrollable(self.root)
+        self._scroll_body = root
         pad = {"padx": 8, "pady": 3}
 
         # ── Header ────────────────────────────────────────────────────────────
