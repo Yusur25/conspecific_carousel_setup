@@ -31,15 +31,17 @@ class PerformanceGUI:
         self._animal_name = animal_name
 
         self._base_title = f"Social Memory — {animal_name} ({mode})"
-        self.fig = plt.figure(figsize=(10, 8))
+        figsize = (10, 8) if mode == "training" else (10, 15)
+        self.fig = plt.figure(figsize=figsize)
         self.fig.suptitle(self._base_title, fontsize=13)
 
         if mode == "training":
             self._build_training_axes()
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
         else:
             self._build_task_axes()
+            self.fig.subplots_adjust(top=0.94, bottom=0.04, hspace=0.8)
 
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
         plt.show(block=False)
 
     # ── Axis builders ─────────────────────────────────────────────────────────
@@ -67,20 +69,41 @@ class PerformanceGUI:
         self.ax_block.grid(True, axis="y")
 
     def _build_task_axes(self):
-        gs = self.fig.add_gridspec(3, 1, hspace=0.55)
-        self.ax_sampling = self.fig.add_subplot(gs[0])
-        self.ax_cc_rt    = self.fig.add_subplot(gs[1])
-        self.ax_cc_block = self.fig.add_subplot(gs[2])
+        gs = self.fig.add_gridspec(6, 1, hspace=0.8,
+                                    height_ratios=[1, 1, 1, 1.3, 0.4, 1.1])
+        self.ax_engage   = self.fig.add_subplot(gs[0])
+        self.ax_sampling = self.fig.add_subplot(gs[1])
+        self.ax_bouts    = self.fig.add_subplot(gs[2])
+        self.ax_cc_rt    = self.fig.add_subplot(gs[3])
+        self.ax_cc_miss  = self.fig.add_subplot(gs[4], sharex=self.ax_cc_rt)
+        self.ax_cc_block = self.fig.add_subplot(gs[5])
+
+        self.ax_engage.set_ylabel("Time (s)")
+        self.ax_engage.set_xlabel("Presentation #")
+        self.ax_engage.set_title(
+            "Time to engage stimulus  (door open → table sensor triggered; blue = S1, orange = S2)",
+            fontsize=10)
+        self.ax_engage.grid(True, axis="y")
 
         self.ax_sampling.set_ylabel("Sampling time (s)")
         self.ax_sampling.set_xlabel("Presentation #")
         self.ax_sampling.set_title("Stimulus sampling time  (blue = S1, orange = S2)", fontsize=10)
         self.ax_sampling.grid(True, axis="y")
 
+        self.ax_bouts.set_ylabel("Bouts")
+        self.ax_bouts.set_xlabel("Presentation #")
+        self.ax_bouts.set_title("Number of sampling bouts  (blue = S1, orange = S2)", fontsize=10)
+        self.ax_bouts.grid(True, axis="y")
+
         self.ax_cc_rt.set_ylabel("RT (s)")
-        self.ax_cc_rt.set_xlabel("CC trial #")
         self.ax_cc_rt.set_title("Conditioning RT", fontsize=10)
         self.ax_cc_rt.grid(True)
+        self.ax_cc_rt.tick_params(labelbottom=False)
+
+        self.ax_cc_miss.set_yticks([])
+        self.ax_cc_miss.set_ylabel("Miss", fontsize=8)
+        self.ax_cc_miss.set_xlabel("CC trial #")
+        self.ax_cc_miss.grid(True, axis="x")
 
         self.ax_cc_block.set_ylabel("Hit rate (%)")
         self.ax_cc_block.set_xlabel("CC block (10 trials)")
@@ -155,55 +178,86 @@ class PerformanceGUI:
     # ── Task mode ─────────────────────────────────────────────────────────────
 
     def _update_task(self, presentations: pd.DataFrame, conditioning: pd.DataFrame):
-        # Sampling times
-        self.ax_sampling.clear()
-        if not presentations.empty:
-            colors = [
-                "#2196F3" if str(p).startswith("S1") else "#FF9800"
-                for p in presentations["period"]
-            ]
-            self.ax_sampling.bar(
-                presentations["presentation_num"],
-                presentations["sampling_time"],
-                color=colors, edgecolor="black"
-            )
-            # Labels on bars
-            for _, row in presentations.iterrows():
-                self.ax_sampling.text(
-                    row["presentation_num"], row["sampling_time"] + 0.05,
-                    row["period"], ha="center", fontsize=7, rotation=45
-                )
-        self.ax_sampling.set_ylabel("Sampling time (s)")
-        self.ax_sampling.set_xlabel("Presentation #")
-        self.ax_sampling.set_title("Stimulus sampling time  (blue = S1, orange = S2)", fontsize=10)
-        self.ax_sampling.grid(True, axis="y")
+        self._draw_presentation_bar(
+            self.ax_engage, presentations, "time_to_engage",
+            "Time (s)",
+            "Time to engage stimulus  (door open → table sensor triggered; blue = S1, orange = S2)")
+        self._draw_presentation_bar(
+            self.ax_sampling, presentations, "sampling_time",
+            "Sampling time (s)",
+            "Stimulus sampling time  (blue = S1, orange = S2)",
+            show_labels=True)
+        self._draw_presentation_bar(
+            self.ax_bouts, presentations, "bout_count",
+            "Bouts",
+            "Number of sampling bouts  (blue = S1, orange = S2)")
 
         if conditioning is None or conditioning.empty:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
 
-        # CC RT scatter
-        self.ax_cc_rt.clear()
-        cc_num = range(1, len(conditioning) + 1)
         valid = conditioning["rt"].notna()
-        if valid.any():
-            ports = conditioning.loc[valid, "port"]
-            colors = [_port_color(p) for p in ports]
-            self.ax_cc_rt.scatter(
-                [i + 1 for i, v in enumerate(valid) if v],
-                conditioning.loc[valid, "rt"],
-                c=colors, s=25, zorder=3
-            )
+        ports_present = sorted(conditioning["port"].dropna().unique().tolist())
+
+        # CC RT scatter, colored by port
+        self.ax_cc_rt.clear()
+        for port in ports_present:
+            mask = valid & (conditioning["port"] == port)
+            if mask.any():
+                x = [i + 1 for i, v in enumerate(mask) if v]
+                self.ax_cc_rt.scatter(
+                    x, conditioning.loc[mask, "rt"],
+                    color=_port_color(port), label=f"Port {port}", s=25, zorder=3
+                )
         self.ax_cc_rt.set_ylabel("RT (s)")
-        self.ax_cc_rt.set_xlabel("CC trial #")
         self.ax_cc_rt.set_title("Conditioning RT", fontsize=10)
         self.ax_cc_rt.grid(True)
+        self.ax_cc_rt.tick_params(labelbottom=False)
+        if ports_present:
+            self.ax_cc_rt.legend(fontsize=8, loc="upper right")
+
+        # CC misses — narrow row, same x-axis as the RT plot above
+        self.ax_cc_miss.clear()
+        miss = ~valid
+        for port in ports_present:
+            mask = miss & (conditioning["port"] == port)
+            if mask.any():
+                x = [i + 1 for i, v in enumerate(mask) if v]
+                self.ax_cc_miss.scatter(
+                    x, [0] * len(x), color=_port_color(port), marker="x", s=30, zorder=3
+                )
+        self.ax_cc_miss.set_yticks([])
+        self.ax_cc_miss.set_ylabel("Miss", fontsize=8)
+        self.ax_cc_miss.set_xlabel("CC trial #")
+        self.ax_cc_miss.grid(True, axis="x")
 
         # CC block hit rate
         self._draw_block_bars(self.ax_cc_block, conditioning, "reward_triggered")
 
-    # ── Shared helper ─────────────────────────────────────────────────────────
+    # ── Shared helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _draw_presentation_bar(ax, presentations: pd.DataFrame, col: str,
+                                ylabel: str, title: str, show_labels: bool = False):
+        ax.clear()
+        if not presentations.empty:
+            colors = [
+                "#2196F3" if str(p).startswith("S1") else "#FF9800"
+                for p in presentations["period"]
+            ]
+            ax.bar(presentations["presentation_num"], presentations[col],
+                   color=colors, edgecolor="black")
+            if show_labels:
+                for _, row in presentations.iterrows():
+                    ax.text(
+                        row["presentation_num"], row[col] + 0.05,
+                        row["period"], ha="center", fontsize=7, rotation=45
+                    )
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("Presentation #")
+        ax.set_title(title, fontsize=10)
+        ax.grid(True, axis="y")
 
     @staticmethod
     def _draw_block_bars(ax, df: pd.DataFrame, col: str):
@@ -215,10 +269,8 @@ class PerformanceGUI:
             if block.empty:
                 continue
             pct = block[col].mean() * 100
-            t_s = block["trial_num"].iloc[0]
-            t_e = block["trial_num"].iloc[-1]
             blocks.append(pct)
-            labels.append(f"{t_s}–{t_e}")
+            labels.append(f"{start + 1}–{min(start + block_size, len(df))}")
         x = np.arange(len(blocks))
         ax.bar(x, blocks, width=0.6)
         ax.set_xticks(x)

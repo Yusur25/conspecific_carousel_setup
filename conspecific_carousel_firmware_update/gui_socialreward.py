@@ -71,9 +71,9 @@ class PerformanceGUI:
 
     def draw_plan(self, planned_sequence, rewarded_angle=None):
         """Draw gray placeholder dots for all planned trials at session start."""
+        self._rewarded_angle = rewarded_angle
         if not planned_sequence:
             return
-        self._rewarded_angle = rewarded_angle
         angles = sorted(set(planned_sequence))
         y_map  = {a: i for i, a in enumerate(angles)}
 

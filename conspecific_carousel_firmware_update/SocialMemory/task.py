@@ -97,7 +97,10 @@ class SocialMemoryTaskSession(BaseSMSession):
             "period",            # S1_1, S1_2, S2_1, ...
             "angle",
             "presentation_duration",   # configured duration (s)
+            "door_open_time",          # time.time() when door reached "door opened"
+            "time_to_engage",          # presentation_start - door_open_time (s)
             "sampling_time",           # actual time beam was triggered (s)
+            "bout_count",              # number of non-triggered → triggered transitions
             "presentation_start",      # time.time() when timer started (beam first broken)
             "presentation_end",        # time.time() when presentation duration elapsed
         ])
@@ -183,6 +186,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         # 2. Open door (async); wait for fully open
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
         wait_for_door_state(self.shared, "door opened", timeout=None)
+        door_open_time = time.time()
         print(f"[INFO] {period}: door opened")
 
         # 3. Wait for first table beam trigger → start presentation timer
@@ -209,11 +213,13 @@ class SocialMemoryTaskSession(BaseSMSession):
         deadline = pres_start + duration
         contact_time = 0.0
         contact_start = pres_start  # beam is already triggered at pres_start
+        bout_count = 1              # the initial contact counts as the first bout
 
         while self.running and not STOP_EVENT.is_set() and time.time() < deadline:
             state, _ = self.shared.get_port("table")
             if state == "triggered" and contact_start is None:
                 contact_start = time.time()
+                bout_count += 1
             elif state != "triggered" and contact_start is not None:
                 contact_time += time.time() - contact_start
                 contact_start = None
@@ -246,7 +252,10 @@ class SocialMemoryTaskSession(BaseSMSession):
                 "period":              period,
                 "angle":               angle,
                 "presentation_duration": duration,
+                "door_open_time":      door_open_time,
+                "time_to_engage":      pres_start - door_open_time,
                 "sampling_time":       contact_time,
+                "bout_count":          bout_count,
                 "presentation_start":  pres_start,
                 "presentation_end":    pres_end,
             }
