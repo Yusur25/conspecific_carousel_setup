@@ -25,10 +25,12 @@ def _port_color(port):
 
 class PerformanceGUI:
 
-    def __init__(self, animal_name="Animal", mode="training"):
+    def __init__(self, animal_name="Animal", mode="training", stim1_id=None, stim2_id=None):
         plt.ion()
         self._mode = mode  # "training" or "task"
         self._animal_name = animal_name
+        self._s1_label = f"S1 ({stim1_id})" if stim1_id else "S1"
+        self._s2_label = f"S2 ({stim2_id})" if stim2_id else "S2"
 
         self._base_title = f"Social Memory — {animal_name} ({mode})"
         figsize = (10, 8) if mode == "training" else (10, 15)
@@ -81,18 +83,23 @@ class PerformanceGUI:
         self.ax_engage.set_ylabel("Time (s)")
         self.ax_engage.set_xlabel("Presentation #")
         self.ax_engage.set_title(
-            "Time to engage stimulus  (door open → table sensor triggered; blue = S1, orange = S2)",
+            f"Time to engage stimulus  (door open → table sensor triggered; "
+            f"blue = {self._s1_label}, orange = {self._s2_label})",
             fontsize=10)
         self.ax_engage.grid(True, axis="y")
 
         self.ax_sampling.set_ylabel("Sampling time (s)")
         self.ax_sampling.set_xlabel("Presentation #")
-        self.ax_sampling.set_title("Stimulus sampling time  (blue = S1, orange = S2)", fontsize=10)
+        self.ax_sampling.set_title(
+            f"Stimulus sampling time  (blue = {self._s1_label}, orange = {self._s2_label})",
+            fontsize=10)
         self.ax_sampling.grid(True, axis="y")
 
         self.ax_bouts.set_ylabel("Bouts")
         self.ax_bouts.set_xlabel("Presentation #")
-        self.ax_bouts.set_title("Number of sampling bouts  (blue = S1, orange = S2)", fontsize=10)
+        self.ax_bouts.set_title(
+            f"Number of sampling bouts  (blue = {self._s1_label}, orange = {self._s2_label})",
+            fontsize=10)
         self.ax_bouts.grid(True, axis="y")
 
         self.ax_cc_rt.set_ylabel("RT (s)")
@@ -181,16 +188,17 @@ class PerformanceGUI:
         self._draw_presentation_bar(
             self.ax_engage, presentations, "time_to_engage",
             "Time (s)",
-            "Time to engage stimulus  (door open → table sensor triggered; blue = S1, orange = S2)")
+            f"Time to engage stimulus  (door open → table sensor triggered; "
+            f"blue = {self._s1_label}, orange = {self._s2_label})")
         self._draw_presentation_bar(
             self.ax_sampling, presentations, "sampling_time",
             "Sampling time (s)",
-            "Stimulus sampling time  (blue = S1, orange = S2)",
+            f"Stimulus sampling time  (blue = {self._s1_label}, orange = {self._s2_label})",
             show_labels=True)
         self._draw_presentation_bar(
             self.ax_bouts, presentations, "bout_count",
             "Bouts",
-            "Number of sampling bouts  (blue = S1, orange = S2)")
+            f"Number of sampling bouts  (blue = {self._s1_label}, orange = {self._s2_label})")
 
         if conditioning is None or conditioning.empty:
             self.fig.canvas.draw()

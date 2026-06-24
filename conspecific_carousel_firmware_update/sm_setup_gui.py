@@ -290,12 +290,14 @@ class SMSetupDialog:
         s1f = tk.LabelFrame(self._task_frame, text="S1 (familiar stimulus)",
                             padx=6, pady=4)
         s1f.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=2)
+        self._task_vars["s1_id"]       = tk.StringVar()
         self._task_vars["s1_n"]        = tk.StringVar()
         self._task_vars["s1_duration"] = tk.StringVar()
         self._task_vars["s1_box"]      = tk.StringVar()
         self._task_vars["s1_iti_min"]  = tk.StringVar()
         self._task_vars["s1_iti_max"]  = tk.StringVar()
         for i, (label, key) in enumerate([
+            ("Stim ID:",          "s1_id"),
             ("# presentations:",  "s1_n"),
             ("Duration (s):",     "s1_duration"),
             ("Box (0–3):",        "s1_box"),
@@ -308,12 +310,14 @@ class SMSetupDialog:
         s2f = tk.LabelFrame(self._task_frame, text="S2 (novel stimulus)",
                             padx=6, pady=4)
         s2f.grid(row=0, column=2, columnspan=2, sticky="ew", padx=4, pady=2)
+        self._task_vars["s2_id"]       = tk.StringVar()
         self._task_vars["s2_n"]        = tk.StringVar()
         self._task_vars["s2_duration"] = tk.StringVar()
         self._task_vars["s2_box"]      = tk.StringVar()
         self._task_vars["s2_iti_min"]  = tk.StringVar()
         self._task_vars["s2_iti_max"]  = tk.StringVar()
         for i, (label, key) in enumerate([
+            ("Stim ID:",          "s2_id"),
             ("# presentations:",  "s2_n"),
             ("Duration (s):",     "s2_duration"),
             ("Box (0–3):",        "s2_box"),
@@ -514,6 +518,8 @@ class SMSetupDialog:
                 errors.append("Select at least one CC port for the task.")
 
             task = self._task_vars
+            s1_id = task["s1_id"].get().strip()
+            s2_id = task["s2_id"].get().strip()
             s1_angle = s2_angle = None
             try:
                 s1_n        = int(task["s1_n"].get())
@@ -566,12 +572,14 @@ class SMSetupDialog:
                 "door_open_speed": door_open_speed,
                 "door_close_speed": door_close_speed,
                 "table_speed":     table_speed,
+                "s1_id":         s1_id,
                 "s1_n":          s1_n,
                 "s1_duration":   s1_duration,
                 "s1_box":        s1_box,
                 "s1_angle":      s1_angle,
                 "s1_iti_min":    s1_iti_min,
                 "s1_iti_max":    s1_iti_max,
+                "s2_id":         s2_id,
                 "s2_n":          s2_n,
                 "s2_duration":   s2_duration,
                 "s2_box":        s2_box,

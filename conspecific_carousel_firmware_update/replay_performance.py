@@ -145,7 +145,8 @@ def _replay_socialmemory(meta: dict, session_dir: str):
         mode = "task" if os.path.exists(os.path.join(session_dir, "presentations.csv")) else "training"
         print(f"[WARN] No 'mode' in metadata.json — inferred mode={mode!r} from files present")
 
-    perf_gui = PerformanceGUI(animal_name=meta.get("animal", "Animal"), mode=mode)
+    perf_gui = PerformanceGUI(animal_name=meta.get("animal", "Animal"), mode=mode,
+                               stim1_id=meta.get("s1_id"), stim2_id=meta.get("s2_id"))
 
     if mode == "training":
         df = _read_csv(session_dir, "trials.csv")

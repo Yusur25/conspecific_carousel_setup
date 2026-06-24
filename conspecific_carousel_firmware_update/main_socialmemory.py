@@ -129,7 +129,8 @@ def main():
 
     # ── GUIs ──────────────────────────────────────────────────────────────────
     sensor_gui = SensorGUI()
-    perf_gui   = PerformanceGUI(animal_name=animal, mode=mode)
+    perf_gui   = PerformanceGUI(animal_name=animal, mode=mode,
+                                 stim1_id=params.get("s1_id"), stim2_id=params.get("s2_id"))
 
     session = None
 
