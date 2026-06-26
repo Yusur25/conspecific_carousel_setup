@@ -34,6 +34,7 @@ from hardware import (
     wait_for_table_stopped,
     turn_table_degrees,
     SharedSensorState,
+    CameraTriggerLogger,
     STOP_EVENT,
 )
 from .base_session import BaseSMSession
@@ -69,6 +70,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         cc_iti_max: float,
         cc_reward_prob: float = 1.0,
         cc_delay: float = 0.0,
+        camera_logger: CameraTriggerLogger = None,
     ):
         super().__init__(ser, shared, species, valve_times)
         self.n_s1 = n_s1
@@ -89,6 +91,7 @@ class SocialMemoryTaskSession(BaseSMSession):
         self.cc_iti_max = cc_iti_max
         self.cc_reward_prob = cc_reward_prob
         self.cc_delay = cc_delay
+        self.camera_logger = camera_logger
 
         self._current_angle = 0  # local table angle tracking (degrees)
 
@@ -117,6 +120,16 @@ class SocialMemoryTaskSession(BaseSMSession):
             "rt",
             "iti",
             "valve_time",
+        ])
+
+        # One row per camera sync pulse (~1 Hz heartbeat from cameracontrol's
+        # UserOutput, not a per-frame strobe) captured during a presentation's
+        # door-open → stimulus-removal window (passive viewing only; not CC ITIs).
+        self.camera_sync_df = pd.DataFrame(columns=[
+            "presentation_num",
+            "period",
+            "pulse_num",
+            "t_rel_s",      # sync-pulse timestamp, relative to session start (s)
         ])
 
         self._presentation_counter = 0
@@ -189,6 +202,11 @@ class SocialMemoryTaskSession(BaseSMSession):
         door_open_time = time.time()
         print(f"[INFO] {period}: door opened")
 
+        # Start capturing camera sync-pulse timestamps for this passive
+        # presentation window (door open → stimulus removal, below).
+        if self.camera_logger is not None:
+            self.camera_logger.arm()
+
         # 3. Wait for first table beam trigger → start presentation timer
         print(f"[INFO] {period}: waiting for beam break...")
         pres_start = None
@@ -201,6 +219,8 @@ class SocialMemoryTaskSession(BaseSMSession):
             time.sleep(0.01)
 
         if pres_start is None:
+            if self.camera_logger is not None:
+                self.camera_logger.disarm()
             # Stopped before any beam contact — close door and return
             threading.Thread(
                 target=close_door_safe, args=(self.ser, self.shared), daemon=True
@@ -231,6 +251,8 @@ class SocialMemoryTaskSession(BaseSMSession):
         pres_end = time.time()
         print(f"[INFO] {period}: complete — sampling_time={contact_time:.3f} s")
 
+        sync_times = self.camera_logger.disarm() if self.camera_logger is not None else []
+
         # 5. Remove stimulus: 45° CCW (async)
         threading.Thread(
             target=self._turn_ccw_partial, args=(45,), daemon=True
@@ -259,7 +281,18 @@ class SocialMemoryTaskSession(BaseSMSession):
                 "presentation_start":  pres_start,
                 "presentation_end":    pres_end,
             }
-        print(f"[INFO] {period}: door closed, table stopped")
+            if sync_times:
+                new_pulses = pd.DataFrame({
+                    "presentation_num": self._presentation_counter,
+                    "period":           period,
+                    "pulse_num":        range(1, len(sync_times) + 1),
+                    "t_rel_s":          sync_times,
+                })
+                self.camera_sync_df = pd.concat(
+                    [self.camera_sync_df, new_pulses], ignore_index=True
+                )
+        print(f"[INFO] {period}: door closed, table stopped — "
+              f"{len(sync_times)} camera sync pulses captured")
 
     # ── CC ITI ────────────────────────────────────────────────────────────────
 
