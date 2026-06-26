@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from protocol import (
     REG_PA_LED, REG_PA_VALVE, REG_PA_IR,
@@ -23,6 +23,7 @@ from protocol import (
     REG_DOOR_STATUS, REG_DOOR_CMD,
     REG_DOOR_OPN_SPD, REG_DOOR_CLS_SPD,
     REG_TABLE_STATUS, REG_TABLE_CMD, REG_TABLE_SPD,
+    REG_CAM_A, REG_CAM_B,
     build_table_command,
 )
 from serial_comm import DeviceConnection
@@ -221,6 +222,10 @@ class EventLogger:
             self.shared.update("table_motor", state, ts)
             self._log(ts, t, "table_motor", state)
 
+        # ── Camera sync pulse (captured separately by CameraTriggerLogger) ────
+        elif register in (REG_CAM_A, REG_CAM_B):
+            pass
+
         else:
             print(f"[WARNING] Unhandled event: register=0x{register:02X} value={value}")
 
@@ -240,6 +245,81 @@ class EventLogger:
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(f"{start:.3f},{t:.3f}\n")
                 setattr(self, attr, None)
+
+
+# ── Camera trigger capture ─────────────────────────────────────────────────────
+
+class CameraTriggerLogger:
+    """
+    Captures camera sync-pulse timestamps (register REG_CAM_A by default).
+
+    The pulse comes from cameracontrol's UserOutput1/Line2 — a brief TTL fired
+    once every PULSE_EVERY_N_FRAMES video frames (~1 Hz at 30 fps), not a
+    per-frame strobe. It's a checkpoint for relating video frame count to
+    wall-clock time (e.g. detecting dropped frames if the interval between
+    pulses drifts from the expected N/frame_rate seconds), not a per-frame
+    timestamp list.
+
+    The on-event callback is still kept deliberately minimal — it only
+    appends a float to an in-memory list under a lock, with no disk I/O —
+    since it runs on DeviceConnection's serial reader thread, where any
+    blocking work would risk delaying ACK/event processing for the door,
+    table and IR sensors.
+
+    Recording is gated by arm()/disarm() so only a bounded window (e.g. one
+    stimulus presentation) is kept; call sites elsewhere just call disarm()
+    and get back the sync-pulse timestamps for that window.
+
+    Usage:
+        camera_logger = CameraTriggerLogger(session_start=session_start)
+        device.on_event(camera_logger)
+        ...
+        camera_logger.arm()
+        ... (presentation window) ...
+        pulse_times = camera_logger.disarm()
+    """
+
+    def __init__(
+        self,
+        session_start: float,
+        register: int = REG_CAM_A,
+        edge: str = "rising",
+    ):
+        if edge not in ("rising", "falling"):
+            raise ValueError("edge must be 'rising' or 'falling'")
+        self._register = register
+        self._trigger_value = 1 if edge == "rising" else 0
+        self._session_start = session_start
+        self._lock = threading.Lock()
+        self._armed = False
+        self._prev_value: Optional[int] = None
+        self._timestamps: List[float] = []
+
+    def arm(self) -> None:
+        """Start keeping sync-pulse timestamps from this point on."""
+        with self._lock:
+            self._armed = True
+            self._timestamps = []
+
+    def disarm(self) -> List[float]:
+        """Stop keeping sync-pulse timestamps; return and clear the buffered window."""
+        with self._lock:
+            self._armed = False
+            timestamps, self._timestamps = self._timestamps, []
+        return timestamps
+
+    # Called by DeviceConnection's reader thread for every MSG_EVENT packet
+    def __call__(self, register: int, value: int) -> None:
+        if register != self._register:
+            return
+        prev_value = self._prev_value
+        self._prev_value = value
+        if prev_value is None or value == prev_value or value != self._trigger_value:
+            return
+        t = time.time() - self._session_start
+        with self._lock:
+            if self._armed:
+                self._timestamps.append(t)
 
 
 # ── Hardware control functions ────────────────────────────────────────────────

@@ -18,7 +18,7 @@ from datetime import datetime
 
 from serial_comm import DeviceConnection
 from hardware import (
-    SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs,
+    SharedSensorState, EventLogger, CameraTriggerLogger, STOP_EVENT, shutdown_outputs,
     turn_table_degrees, apply_motor_speeds,
 )
 from sm_setup_gui import SMSetupDialog
@@ -129,6 +129,12 @@ def main():
     )
     device.on_event(logger)
 
+    # Camera sync-pulse timestamps (~1 Hz heartbeat from cameracontrol, not a
+    # per-frame strobe) — only armed during task-mode passive stimulus
+    # presentations (see SocialMemoryTaskSession._run_presentation).
+    camera_logger = CameraTriggerLogger(session_start=session_start)
+    device.on_event(camera_logger)
+
     # ── GUIs ──────────────────────────────────────────────────────────────────
     sensor_gui = SensorGUI()
     box_labels = None
@@ -195,6 +201,7 @@ def main():
                 cc_iti_max=params["cc_iti_max"],
                 cc_reward_prob=params["cc_reward_prob"],
                 cc_delay=params.get("cc_delay", 0.0),
+                camera_logger=camera_logger,
             )
             session.start()
             print("[INFO] Task started — Ctrl+C to stop")
@@ -243,10 +250,16 @@ def main():
             elif mode in ("task", "passivetest"):
                 pres_path = os.path.join(BASE_SAVE_DIR, "presentations.csv")
                 cc_path   = os.path.join(BASE_SAVE_DIR, "conditioning_trials.csv")
+            elif mode == "task":
+                pres_path   = os.path.join(BASE_SAVE_DIR, "presentations.csv")
+                cc_path     = os.path.join(BASE_SAVE_DIR, "conditioning_trials.csv")
+                camera_path = os.path.join(BASE_SAVE_DIR, "camera_sync.csv")
                 session.presentations_df.to_csv(pres_path, index=False)
                 session.conditioning_df.to_csv(cc_path, index=False)
+                session.camera_sync_df.to_csv(camera_path, index=False)
                 print(f"[INFO] Presentations saved: {pres_path}")
                 print(f"[INFO] Conditioning trials saved: {cc_path}")
+                print(f"[INFO] Camera sync-pulse timestamps saved: {camera_path}")
                 perf_gui.update(session.snapshot(session.presentations_df),
                                  session.snapshot(session.conditioning_df))
 

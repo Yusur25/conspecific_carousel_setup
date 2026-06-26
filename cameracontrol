@@ -1,0 +1,154 @@
+"""
+Basler camera recording script
+- Records to a compressed H264 MP4 file (suitable for long recordings)
+- Sends a brief TTL pulse every 30 frames (~1 per second at 30 fps)
+- Shows a live preview window while recording
+- Press ENTER (or 'q' in the preview window) to stop
+
+Requirements: pip install pypylon opencv-python
+"""
+
+from pypylon import pylon
+import cv2
+import os
+import time
+import threading
+from datetime import datetime
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+OUTPUT_LINE         = "Line4"        # Change to your output line
+OUTPUT_USER         = "UserOutput3"  # Change if your camera uses "UserOutput" instead
+SAVE_DIR            = "recording"    # Folder to save video into
+FRAME_RATE          = 30.0           # Must match your camera's actual frame rate
+PULSE_EVERY_N_FRAMES = 30            # Send a TTL pulse every N frames
+PULSE_WIDTH_S       = 0.001          # Pulse width in seconds (1 ms)
+H264_CRF            = 23             # H264 quality: lower = better quality, larger file
+                                     # 18 = near-lossless, 23 = default, 28 = smaller file
+SHOW_PREVIEW         = True          # Live preview window while recording
+PREVIEW_EVERY_N_FRAMES = 3           # Update the preview only every N frames — throttled
+                                     # so it doesn't add latency to the recording/pulse loop
+PREVIEW_MAX_WIDTH    = 960           # Downscale the preview window to at most this width
+# ──────────────────────────────────────────────────────────────────────────────
+
+def setup_user_output(camera):
+    camera.LineSelector.Value = OUTPUT_LINE
+    camera.LineSource.Value = OUTPUT_USER
+    camera.UserOutputSelector.Value = OUTPUT_USER
+
+def set_output(camera, state: bool):
+    camera.UserOutputValue.Value = state
+
+def show_preview(frame, width, height) -> bool:
+    """Display frame (downscaled to PREVIEW_MAX_WIDTH). Returns True if 'q' was pressed."""
+    if width > PREVIEW_MAX_WIDTH:
+        scale = PREVIEW_MAX_WIDTH / width
+        frame = cv2.resize(frame, (PREVIEW_MAX_WIDTH, int(height * scale)))
+    cv2.imshow("Camera Preview", frame)
+    return cv2.waitKey(1) & 0xFF == ord("q")
+
+def main():
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    video_path = os.path.join(SAVE_DIR, f"recording_{timestamp}.mp4")
+
+    camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+    camera.Open()
+    print(f"Camera: {camera.GetDeviceInfo().GetModelName()}")
+
+    # Configure UserOutput line
+    setup_user_output(camera)
+    set_output(camera, False)
+
+    # Converter to BGR8 for OpenCV
+    converter = pylon.ImageFormatConverter()
+    converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+    converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+    # Grab one frame first to get resolution for the video writer
+    camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+    with camera.RetrieveResult(5000) as result:
+        if not result.GrabSucceeded():
+            print("Failed to grab initial frame. Exiting.")
+            camera.Close()
+            return
+        first_frame = converter.Convert(result).GetArray()
+        height, width = first_frame.shape[:2]
+
+    if SHOW_PREVIEW:
+        show_preview(first_frame, width, height)
+
+    # Set up OpenCV video writer with H264 codec
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # fallback codec
+    try:
+        # Try avc1 (H264) first — works on most systems with OpenCV
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    except Exception:
+        pass
+
+    writer = cv2.VideoWriter(video_path, fourcc, FRAME_RATE, (width, height))
+    if not writer.isOpened():
+        # Fall back to mp4v if avc1 failed
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(video_path, fourcc, FRAME_RATE, (width, height))
+
+    if not writer.isOpened():
+        print("Could not open video writer. Check OpenCV H264 support.")
+        camera.Close()
+        return
+
+    # Write the first frame we already grabbed
+    writer.write(first_frame)
+    frame_count = 1
+
+    # Stop flag controlled by keypress
+    stop_flag = threading.Event()
+
+    def wait_for_enter():
+        input("Recording... Press ENTER to stop.\n")
+        stop_flag.set()
+
+    print(f"Recording started → {video_path}")
+    print(f"Resolution: {width}x{height} @ {FRAME_RATE} fps")
+    print(f"TTL pulse every {PULSE_EVERY_N_FRAMES} frames.")
+    if SHOW_PREVIEW:
+        print("Live preview window open — press 'q' there (or ENTER here) to stop.")
+
+    key_thread = threading.Thread(target=wait_for_enter, daemon=True)
+    key_thread.start()
+
+    while camera.IsGrabbing() and not stop_flag.is_set():
+        try:
+            with camera.RetrieveResult(1000, pylon.TimeoutHandling_Return) as result:
+                if result and result.GrabSucceeded():
+                    frame = converter.Convert(result).GetArray()
+                    writer.write(frame)
+                    frame_count += 1
+
+                    # TTL pulse every N frames
+                    if frame_count % PULSE_EVERY_N_FRAMES == 0:
+                        set_output(camera, True)
+                        time.sleep(PULSE_WIDTH_S)
+                        set_output(camera, False)
+
+                    if SHOW_PREVIEW and frame_count % PREVIEW_EVERY_N_FRAMES == 0:
+                        if show_preview(frame, width, height):
+                            stop_flag.set()
+
+        except Exception as e:
+            print(f"Grab error: {e}")
+            break
+
+    writer.release()
+    camera.StopGrabbing()
+    camera.Close()
+    if SHOW_PREVIEW:
+        cv2.destroyAllWindows()
+
+    duration_s = frame_count / FRAME_RATE
+    size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    print(f"Recording stopped.")
+    print(f"  Frames: {frame_count} ({duration_s:.1f} s)")
+    print(f"  File:   {video_path} ({size_mb:.1f} MB)")
+
+if __name__ == "__main__":
+    main()
