@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from protocol import (
     REG_PA_LED, REG_PA_VALVE, REG_PA_IR,
