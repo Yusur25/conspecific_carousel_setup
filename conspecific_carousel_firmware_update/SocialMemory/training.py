@@ -174,4 +174,3 @@ class ClassicalConditioningSession(BaseSMSession):
                 "iti":                 iti,
                 "valve_time":          valve_time_used,
             }
-            print(self.results_df.iloc[-1].to_dict())

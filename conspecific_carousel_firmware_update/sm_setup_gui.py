@@ -40,6 +40,11 @@ SPECIES_DEFAULTS = {
         "s2_box":             3,
         "s2_iti_min":       600.0,
         "s2_iti_max":       600.0,
+        # Passive test
+        "passive_box_n":      3,
+        "passive_duration": 300.0,
+        "passive_iti_min":  600.0,
+        "passive_iti_max":  600.0,
         "door_open_speed":  255,
         "door_close_speed": 40,
         "table_speed":      40,
@@ -64,6 +69,11 @@ SPECIES_DEFAULTS = {
         "s2_box":             3,
         "s2_iti_min":       300.0,
         "s2_iti_max":       300.0,
+        # Passive test
+        "passive_box_n":      3,
+        "passive_duration": 180.0,
+        "passive_iti_min":  300.0,
+        "passive_iti_max":  300.0,
         "door_open_speed":  255,
         "door_close_speed": 40,
         "table_speed":      40,
@@ -77,7 +87,7 @@ class SMSetupDialog:
         self.result = None
         self.root = tk.Tk()
         self.root.title("Social Memory — Session Setup")
-        self.root.resizable(False, True)
+        self.root.resizable(True, True)
 
         self._species_var = tk.StringVar(value="rat")
         self._mode_var    = tk.StringVar(value="training")
@@ -85,10 +95,12 @@ class SMSetupDialog:
         self._port_vars   = {}          # port checkboxes
         self._cc_vars     = {}          # CC parameters
         self._task_vars   = {}          # task-specific parameters
+        self._passive_vars = {}         # passive-test-specific parameters
         self._speed_vars  = {}          # motor speed parameters
 
         self._training_frame = None
         self._task_frame     = None
+        self._passive_frame  = None
 
         self._build_ui()
         self._on_species_change()
@@ -109,12 +121,16 @@ class SMSetupDialog:
             s[f"cc_{k}"] = v.get()
         for k, v in self._task_vars.items():
             s[f"task_{k}"] = v.get()
+        for k, v in self._passive_vars.items():
+            s[f"passive_{k}"] = v.get()
         for k, v in self._speed_vars.items():
             s[f"speed_{k}"] = v.get()
         for port, v in self._port_vars.items():
             s[f"port_{port}"] = v.get()
         for port, v in self._task_port_vars.items():
             s[f"task_port_{port}"] = v.get()
+        for port, v in self._passive_port_vars.items():
+            s[f"passive_port_{port}"] = v.get()
         try:
             with open(_SETTINGS_FILE, "w") as f:
                 json.dump(s, f, indent=2)
@@ -142,6 +158,9 @@ class SMSetupDialog:
         for k, v in self._task_vars.items():
             if f"task_{k}" in s:
                 v.set(s[f"task_{k}"])
+        for k, v in self._passive_vars.items():
+            if f"passive_{k}" in s:
+                v.set(s[f"passive_{k}"])
         for k, v in self._speed_vars.items():
             if f"speed_{k}" in s:
                 v.set(s[f"speed_{k}"])
@@ -151,6 +170,9 @@ class SMSetupDialog:
         for port, v in self._task_port_vars.items():
             if f"task_port_{port}" in s:
                 v.set(s[f"task_port_{port}"])
+        for port, v in self._passive_port_vars.items():
+            if f"passive_port_{port}" in s:
+                v.set(s[f"passive_port_{port}"])
 
     # ── Layout helpers ────────────────────────────────────────────────────────
 
@@ -208,9 +230,10 @@ class SMSetupDialog:
             row=8, column=0, sticky="w", **pad)
         mf = tk.Frame(root)
         mf.grid(row=8, column=1, columnspan=3, sticky="w", **pad)
-        for mode in ("Training", "Task"):
-            tk.Radiobutton(mf, text=mode, variable=self._mode_var,
-                           value=mode.lower(),
+        for label, value in (("Training", "training"), ("Task", "task"),
+                              ("Passive Test", "passivetest")):
+            tk.Radiobutton(mf, text=label, variable=self._mode_var,
+                           value=value,
                            command=self._on_mode_change).pack(side="left", padx=4)
 
         ttk.Separator(root, orient="horizontal").grid(
@@ -371,6 +394,84 @@ class SMSetupDialog:
                  font=("Arial", 8), fg="gray").grid(
             row=9, column=0, columnspan=4, sticky="w", padx=4)
 
+        # ── Passive Test frame ───────────────────────────────────────────────────
+        self._passive_frame = tk.LabelFrame(
+            root, text="Passive Test Parameters", padx=8, pady=6)
+        self._passive_frame.grid(
+            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+
+        # Box sub-frame: label + # presentations for each of the 4 boxes
+        boxf = tk.LabelFrame(self._passive_frame, text="Boxes", padx=6, pady=4)
+        boxf.grid(row=0, column=0, columnspan=4, sticky="ew", padx=4, pady=2)
+        tk.Label(boxf, text="Box", anchor="w").grid(row=0, column=0, padx=6, pady=2)
+        tk.Label(boxf, text="Stim label", anchor="w").grid(row=0, column=1, padx=6, pady=2)
+        tk.Label(boxf, text="# presentations", anchor="w").grid(row=0, column=2, padx=6, pady=2)
+        for i in range(4):
+            angle = i * 90
+            self._passive_vars[f"box{i}_id"] = tk.StringVar()
+            self._passive_vars[f"box{i}_n"]  = tk.StringVar()
+            tk.Label(boxf, text=f"Box {i} ({angle}°):", anchor="w").grid(
+                row=1 + i, column=0, sticky="w", padx=6, pady=2)
+            tk.Entry(boxf, textvariable=self._passive_vars[f"box{i}_id"], width=16).grid(
+                row=1 + i, column=1, padx=6, pady=2)
+            tk.Entry(boxf, textvariable=self._passive_vars[f"box{i}_n"], width=8).grid(
+                row=1 + i, column=2, padx=6, pady=2)
+        tk.Label(boxf,
+                 text="(pseudorandom order — no two consecutive presentations use the same box)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=5, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 0))
+
+        # Shared duration / ITI
+        self._passive_vars["duration"] = tk.StringVar()
+        self._passive_vars["iti_min"]  = tk.StringVar()
+        self._passive_vars["iti_max"]  = tk.StringVar()
+        for i, (label, key) in enumerate([
+            ("Presentation duration (s):", "duration"),
+            ("ITI min (s):",               "iti_min"),
+            ("ITI max (s):",               "iti_max"),
+        ]):
+            self._row(self._passive_frame, label, self._passive_vars[key], row=1 + i, width=10)
+
+        # CC sub-frame (within passive test)
+        pccf = tk.LabelFrame(self._passive_frame,
+                             text="Classical Conditioning (during ITI)", padx=6, pady=4)
+        pccf.grid(row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+
+        tk.Label(pccf, text="Ports:", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=4, pady=2)
+        ppf = tk.Frame(pccf)
+        ppf.grid(row=0, column=1, columnspan=3, sticky="w")
+        self._passive_port_vars = {}
+        for port in ("A", "B", "C"):
+            v = tk.BooleanVar(value=(port != "C"))
+            self._passive_port_vars[port] = v
+            tk.Checkbutton(ppf, text=f"Port {port}", variable=v).pack(
+                side="left", padx=4)
+
+        self._passive_vars["cc_led_on_time"] = tk.StringVar()
+        self._passive_vars["cc_iti_min"]     = tk.StringVar()
+        self._passive_vars["cc_iti_max"]     = tk.StringVar()
+        self._passive_vars["cc_reward_prob"] = tk.StringVar()
+        self._passive_vars["cc_delay"]       = tk.StringVar()
+        self._passive_vars["valve_time_A"]   = tk.StringVar()
+        self._passive_vars["valve_time_B"]   = tk.StringVar()
+        self._passive_vars["valve_time_C"]   = tk.StringVar()
+        for i, (label, key) in enumerate([
+            ("CC LED on time (s):",   "cc_led_on_time"),
+            ("CC trial ITI min (s):", "cc_iti_min"),
+            ("CC trial ITI max (s):", "cc_iti_max"),
+            ("Reward probability:",   "cc_reward_prob"),
+            ("CC delay (s):",         "cc_delay"),
+            ("Valve time A (s):",     "valve_time_A"),
+            ("Valve time B (s):",     "valve_time_B"),
+            ("Valve time C (s):",     "valve_time_C"),
+        ]):
+            self._row(pccf, label, self._passive_vars[key], row=1 + i, width=10)
+        tk.Label(pccf,
+                 text="(CC delay: idle time before conditioning starts each ITI)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=9, column=0, columnspan=4, sticky="w", padx=4)
+
         # ── Notes ─────────────────────────────────────────────────────────────
         ttk.Separator(root, orient="horizontal").grid(
             row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
@@ -423,14 +524,30 @@ class SMSetupDialog:
         for p in "ABC":
             self._task_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
 
+        for i in range(4):
+            self._passive_vars[f"box{i}_n"].set(str(d["passive_box_n"]))
+        self._passive_vars["duration"].set(str(d["passive_duration"]))
+        self._passive_vars["iti_min"].set(str(d["passive_iti_min"]))
+        self._passive_vars["iti_max"].set(str(d["passive_iti_max"]))
+        self._passive_vars["cc_led_on_time"].set(str(d["cc_led_on_time"]))
+        self._passive_vars["cc_iti_min"].set(str(d["cc_iti_min"]))
+        self._passive_vars["cc_iti_max"].set(str(d["cc_iti_max"]))
+        self._passive_vars["cc_reward_prob"].set(str(d["cc_reward_prob"]))
+        self._passive_vars["cc_delay"].set(str(d["cc_delay"]))
+        for p in "ABC":
+            self._passive_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
+
     def _on_mode_change(self):
         mode = self._mode_var.get()
+        self._training_frame.grid_remove()
+        self._task_frame.grid_remove()
+        self._passive_frame.grid_remove()
         if mode == "training":
-            self._task_frame.grid_remove()
             self._training_frame.grid()
-        else:
-            self._training_frame.grid_remove()
+        elif mode == "task":
             self._task_frame.grid()
+        else:
+            self._passive_frame.grid()
         self.root.update_idletasks()
 
     # ── Validation and start ──────────────────────────────────────────────────
@@ -512,7 +629,7 @@ class SMSetupDialog:
                 "notes":           self._notes.get("1.0", "end").strip(),
             }
 
-        else:  # task
+        elif mode == "task":
             cc_ports = [p for p in ("A", "B", "C") if self._task_port_vars[p].get()]
             if not cc_ports:
                 errors.append("Select at least one CC port for the task.")
@@ -594,6 +711,86 @@ class SMSetupDialog:
                 "cc_delay":      cc_delay,
                 "valve_times":   {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
                 "notes":         self._notes.get("1.0", "end").strip(),
+            }
+
+        else:  # passivetest
+            cc_ports = [p for p in ("A", "B", "C") if self._passive_port_vars[p].get()]
+            if not cc_ports:
+                errors.append("Select at least one CC port for the passive test.")
+
+            pv = self._passive_vars
+            box_ids = [pv[f"box{i}_id"].get().strip() for i in range(4)]
+            box_n = duration = iti_min = iti_max = None
+            cc_led = cc_iti_min = cc_iti_max = cc_prob = cc_delay = None
+            valve_time_A = valve_time_B = valve_time_C = None
+            try:
+                box_n        = [int(pv[f"box{i}_n"].get()) for i in range(4)]
+                duration     = float(pv["duration"].get())
+                iti_min      = float(pv["iti_min"].get())
+                iti_max      = float(pv["iti_max"].get())
+                cc_led       = float(pv["cc_led_on_time"].get())
+                cc_iti_min   = float(pv["cc_iti_min"].get())
+                cc_iti_max   = float(pv["cc_iti_max"].get())
+                cc_prob      = float(pv["cc_reward_prob"].get())
+                cc_delay     = float(pv["cc_delay"].get())
+                valve_time_A = float(pv["valve_time_A"].get())
+                valve_time_B = float(pv["valve_time_B"].get())
+                valve_time_C = float(pv["valve_time_C"].get())
+            except ValueError:
+                errors.append("All passive test parameters must be numbers.")
+
+            if box_n is not None:
+                if any(n < 0 for n in box_n):
+                    errors.append("Box presentation counts cannot be negative.")
+                total = sum(box_n)
+                if total < 1:
+                    errors.append("At least one box must have 1 or more presentations.")
+                else:
+                    max_n = max(box_n)
+                    max_allowed = (total + 1) // 2
+                    if max_n > max_allowed:
+                        worst = box_n.index(max_n)
+                        errors.append(
+                            f"Box {worst} has {max_n} of {total} total presentations — "
+                            f"no arrangement avoids consecutive repeats "
+                            f"(max allowed is {max_allowed}). Reduce its count or add "
+                            f"presentations to other boxes."
+                        )
+                if duration is not None and duration <= 0:
+                    errors.append("Presentation duration must be greater than 0.")
+                if iti_min is not None and iti_max is not None and iti_min > iti_max:
+                    errors.append("ITI min cannot be greater than ITI max.")
+
+            if cc_prob is not None and not (0.0 < cc_prob <= 1.0):
+                errors.append("Reward probability must be between 0 (exclusive) and 1.")
+
+            if errors:
+                messagebox.showerror("Input Error", "\n".join(errors))
+                return
+
+            self.result = {
+                "mode":            "passivetest",
+                "species":         self._species_var.get(),
+                "animal":          animal,
+                "session_n":       session_n,
+                "port":            port,
+                "baud":            baud,
+                "door_open_speed": door_open_speed,
+                "door_close_speed": door_close_speed,
+                "table_speed":     table_speed,
+                "box_ids":         box_ids,
+                "box_n":           box_n,
+                "presentation_duration": duration,
+                "iti_min":         iti_min,
+                "iti_max":         iti_max,
+                "cc_ports":        cc_ports,
+                "cc_led_on_time":  cc_led,
+                "cc_iti_min":      cc_iti_min,
+                "cc_iti_max":      cc_iti_max,
+                "cc_reward_prob":  cc_prob,
+                "cc_delay":        cc_delay,
+                "valve_times":     {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
+                "notes":           self._notes.get("1.0", "end").strip(),
             }
 
         self._save_settings()

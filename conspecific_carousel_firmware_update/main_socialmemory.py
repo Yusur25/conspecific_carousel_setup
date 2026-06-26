@@ -6,8 +6,9 @@
 # Parameters are saved as metadata.json in the session output folder.
 #
 # Modes:
-#   training — classical conditioning (port A/B/C, led_on_time, ITI, reward prob)
-#   task     — stimulus presentations (S1 + S2) with CC during each ITI
+#   training    — classical conditioning (port A/B/C, led_on_time, ITI, reward prob)
+#   task        — stimulus presentations (S1 + S2) with CC during each ITI
+#   passivetest — pseudorandom presentations of all 4 boxes with CC during each ITI
 
 import time
 import signal
@@ -81,9 +82,10 @@ def main():
     port      = params["port"]
     baud      = params["baud"]
 
-    from SocialMemory.training import ClassicalConditioningSession
-    from SocialMemory.task     import SocialMemoryTaskSession
-    from gui_socialmemory      import SensorGUI, PerformanceGUI
+    from SocialMemory.training     import ClassicalConditioningSession
+    from SocialMemory.task         import SocialMemoryTaskSession
+    from SocialMemory.passive_test import PassiveTestSession, generate_box_sequence, label_sequence
+    from gui_socialmemory           import SensorGUI, PerformanceGUI
 
     # ── Output directory + metadata ───────────────────────────────────────────
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -129,8 +131,22 @@ def main():
 
     # ── GUIs ──────────────────────────────────────────────────────────────────
     sensor_gui = SensorGUI()
-    perf_gui   = PerformanceGUI(animal_name=animal, mode=mode,
-                                 stim1_id=params.get("s1_id"), stim2_id=params.get("s2_id"))
+    box_labels = None
+    expected_periods = None
+    passive_sequence = None
+    if mode == "task":
+        expected_periods = ([f"S1_{i + 1}" for i in range(params["s1_n"])]
+                             + [f"S2_{i + 1}" for i in range(params["s2_n"])])
+    elif mode == "passivetest":
+        box_labels = {i: params["box_ids"][i] for i in range(4)}
+        passive_sequence = generate_box_sequence(
+            {i: params["box_n"][i] for i in range(4)}
+        )
+        expected_periods = label_sequence(passive_sequence)
+
+    perf_gui = PerformanceGUI(animal_name=animal, mode=mode,
+                               stim1_id=params.get("s1_id"), stim2_id=params.get("s2_id"),
+                               box_labels=box_labels, expected_periods=expected_periods)
 
     session = None
 
@@ -184,6 +200,29 @@ def main():
             print("[INFO] Task started — Ctrl+C to stop")
             _run_loop_task(session, shared, sensor_gui, perf_gui)
 
+        elif mode == "passivetest":
+            session = PassiveTestSession(
+                ser=device,
+                shared=shared,
+                species=species,
+                valve_times=params["valve_times"],
+                box_ids=params["box_ids"],
+                box_n=params["box_n"],
+                presentation_duration=params["presentation_duration"],
+                iti_min=params["iti_min"],
+                iti_max=params["iti_max"],
+                cc_ports=params["cc_ports"],
+                cc_led_on_time=params["cc_led_on_time"],
+                cc_iti_min=params["cc_iti_min"],
+                cc_iti_max=params["cc_iti_max"],
+                cc_reward_prob=params["cc_reward_prob"],
+                cc_delay=params.get("cc_delay", 0.0),
+                sequence=passive_sequence,
+            )
+            session.start()
+            print("[INFO] Passive test started — Ctrl+C to stop")
+            _run_loop_task(session, shared, sensor_gui, perf_gui)
+
         else:
             print(f"[ERROR] Unknown mode: {mode}")
 
@@ -201,7 +240,7 @@ def main():
                 # Final GUI update
                 perf_gui.update(session.snapshot(session.results_df))
 
-            elif mode == "task":
+            elif mode in ("task", "passivetest"):
                 pres_path = os.path.join(BASE_SAVE_DIR, "presentations.csv")
                 cc_path   = os.path.join(BASE_SAVE_DIR, "conditioning_trials.csv")
                 session.presentations_df.to_csv(pres_path, index=False)
@@ -211,8 +250,8 @@ def main():
                 perf_gui.update(session.snapshot(session.presentations_df),
                                  session.snapshot(session.conditioning_df))
 
-        # Return turntable to home after task (task uses turntable)
-        if mode == "task" and session is not None:
+        # Return turntable to home after task/passivetest (both use the turntable)
+        if mode in ("task", "passivetest") and session is not None:
             try:
                 def _poll_stopped(timeout=20.0):
                     time.sleep(1.0)

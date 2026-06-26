@@ -353,7 +353,6 @@ def turn_table_degrees(device: DeviceConnection, delta_degrees: int) -> None:
     if eighths == 0:
         raise ValueError(f"Unsupported rotation angle: {angle}° (must be a multiple of 45°)")
 
-    print(f"[DEBUG] Turning {'CW' if direction == 0 else 'CCW'} {angle}°")
     device.write_register(REG_TABLE_CMD, build_table_command(direction, eighths))
 
 

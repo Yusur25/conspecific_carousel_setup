@@ -2,49 +2,126 @@
 #
 # PerformanceGUI.update(df, conditioning_df=None):
 #   conditioning_df=None → training mode (ClassicalConditioningSession)
-#   conditioning_df provided → task mode (SocialMemoryTaskSession)
+#   conditioning_df provided → task or passivetest mode (presentations + CC ITIs)
 #
 # SensorGUI: live sensor state (ports A, B, C, door proximity, table sensor)
+
+import re
+import warnings
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 import pandas as pd
 
+# Cosmetic-only matplotlib warnings (e.g. tight_layout/legend edge cases) —
+# the real fixes are applied where possible; this is a backstop for the rest.
+warnings.filterwarnings("ignore", category=UserWarning, module=r"matplotlib\..*")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 PORT_COLORS = {"A": "#2196F3", "B": "#4CAF50", "C": "#FF9800"}
+
+# Box index → color, used by passivetest mode (4 boxes) and color names for the
+# legend text shown in plot titles.
+BOX_COLORS = ["#2196F3", "#FF9800", "#4CAF50", "#9C27B0"]
+BOX_COLOR_NAMES = ["blue", "orange", "green", "purple"]
+
+_BOX_PERIOD_RE = re.compile(r"^Box(\d+)_")
+
+# Cap GUI windows to a comfortable fraction of the screen so they don't
+# overwhelm a standard laptop display; windows remain freely resizable/draggable.
+MAX_SCREEN_FRACTION = 0.85
 
 
 def _port_color(port):
     return PORT_COLORS.get(port, "gray")
 
 
+def _fit_figure_to_screen(fig):
+    """Cap a matplotlib figure's Tk window to MAX_SCREEN_FRACTION of the screen
+    and center it, without disabling the window's native resize/drag behavior.
+
+    Measures the *actual* rendered window size (rather than computing it from
+    fig.dpi) because Tk's logical pixels and matplotlib's dpi-based pixels can
+    disagree under OS display scaling — comparing against the real, drawn size
+    sidesteps that mismatch. Resizing the figure itself (set_size_inches with
+    forward=True), not a raw .geometry() call, is what actually sticks: the
+    canvas widget drives the window's size and would otherwise override it.
+    """
+    try:
+        window = fig.canvas.manager.window
+        fig.canvas.draw()
+        window.update_idletasks()
+
+        screen_w = window.winfo_screenwidth()
+        screen_h = window.winfo_screenheight()
+        max_w = int(screen_w * MAX_SCREEN_FRACTION)
+        max_h = int(screen_h * MAX_SCREEN_FRACTION)
+
+        win_w = window.winfo_width()
+        win_h = window.winfo_height()
+        if win_w > max_w or win_h > max_h:
+            scale = min(max_w / win_w, max_h / win_h)
+            fig.set_size_inches(fig.get_figwidth() * scale,
+                                 fig.get_figheight() * scale, forward=True)
+            window.update_idletasks()
+            win_w = window.winfo_width()
+            win_h = window.winfo_height()
+
+        x = max(0, (screen_w - win_w) // 2)
+        y = max(0, (screen_h - win_h) // 2)
+        window.geometry(f"+{x}+{y}")
+    except Exception:
+        pass  # non-Tk backend (e.g. Agg in tests) — nothing to size
+
+
 # ── Performance GUI ───────────────────────────────────────────────────────────
 
 class PerformanceGUI:
 
-    def __init__(self, animal_name="Animal", mode="training", stim1_id=None, stim2_id=None):
+    def __init__(self, animal_name="Animal", mode="training", stim1_id=None, stim2_id=None,
+                 box_labels=None, expected_periods=None):
         plt.ion()
-        self._mode = mode  # "training" or "task"
+        self._mode = mode  # "training", "task", or "passivetest"
         self._animal_name = animal_name
         self._s1_label = f"S1 ({stim1_id})" if stim1_id else "S1"
         self._s2_label = f"S2 ({stim2_id})" if stim2_id else "S2"
+        self._box_labels = box_labels or {}
+        self._expected_periods = list(expected_periods) if expected_periods else []
+
+        if mode == "passivetest":
+            self._color_legend_text = ", ".join(
+                f"{BOX_COLOR_NAMES[i]} = Box{i}"
+                + (f" ({self._box_labels[i]})" if self._box_labels.get(i) else "")
+                for i in range(4)
+            )
+        else:
+            self._color_legend_text = f"blue = {self._s1_label}, orange = {self._s2_label}"
 
         self._base_title = f"Social Memory — {animal_name} ({mode})"
-        figsize = (10, 8) if mode == "training" else (10, 15)
+        figsize = (7, 6) if mode == "training" else (9, 7.5)
         self.fig = plt.figure(figsize=figsize)
         self.fig.suptitle(self._base_title, fontsize=13)
 
         if mode == "training":
             self._build_training_axes()
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            self.fig.subplots_adjust(top=0.91, bottom=0.07, hspace=0.55)
         else:
             self._build_task_axes()
-            self.fig.subplots_adjust(top=0.94, bottom=0.04, hspace=0.8)
+            self.fig.subplots_adjust(top=0.93, bottom=0.05, hspace=0.9)
 
         plt.show(block=False)
+        _fit_figure_to_screen(self.fig)
+
+    def _color_of_period(self, period):
+        if self._mode == "passivetest":
+            m = _BOX_PERIOD_RE.match(str(period))
+            if m:
+                return BOX_COLORS[int(m.group(1)) % len(BOX_COLORS)]
+            return "gray"
+        return "#2196F3" if str(period).startswith("S1") else "#FF9800"
 
     # ── Axis builders ─────────────────────────────────────────────────────────
 
@@ -84,21 +161,21 @@ class PerformanceGUI:
         self.ax_engage.set_xlabel("Presentation #")
         self.ax_engage.set_title(
             f"Time to engage stimulus  (door open → table sensor triggered; "
-            f"blue = {self._s1_label}, orange = {self._s2_label})",
+            f"{self._color_legend_text})",
             fontsize=10)
         self.ax_engage.grid(True, axis="y")
 
         self.ax_sampling.set_ylabel("Sampling time (s)")
         self.ax_sampling.set_xlabel("Presentation #")
         self.ax_sampling.set_title(
-            f"Stimulus sampling time  (blue = {self._s1_label}, orange = {self._s2_label})",
+            f"Stimulus sampling time  ({self._color_legend_text})",
             fontsize=10)
         self.ax_sampling.grid(True, axis="y")
 
         self.ax_bouts.set_ylabel("Bouts")
         self.ax_bouts.set_xlabel("Presentation #")
         self.ax_bouts.set_title(
-            f"Number of sampling bouts  (blue = {self._s1_label}, orange = {self._s2_label})",
+            f"Number of sampling bouts  ({self._color_legend_text})",
             fontsize=10)
         self.ax_bouts.grid(True, axis="y")
 
@@ -121,7 +198,7 @@ class PerformanceGUI:
     # ── Update ────────────────────────────────────────────────────────────────
 
     def update(self, df: pd.DataFrame, conditioning_df: pd.DataFrame = None):
-        if df is None or df.empty:
+        if df is None:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
@@ -162,7 +239,8 @@ class PerformanceGUI:
         self.ax_rt.set_ylabel("RT (s)")
         self.ax_rt.set_xlabel("Trial")
         self.ax_rt.set_title("Reaction time (poke latency)", fontsize=10)
-        self.ax_rt.legend(fontsize=8, loc="upper right")
+        if valid.any():
+            self.ax_rt.legend(fontsize=8, loc="upper right")
         self.ax_rt.grid(True)
 
         # Port choice sequence
@@ -176,7 +254,7 @@ class PerformanceGUI:
         self.ax_ports.set_ylabel("Port")
         self.ax_ports.set_xlabel("Trial")
         self.ax_ports.set_title("Port choice  (green = rewarded, red = not rewarded)", fontsize=10)
-        self.ax_ports.set_ylim(-0.5, max(port_to_y.values()) + 0.5)
+        self.ax_ports.set_ylim(-0.5, (max(port_to_y.values()) if port_to_y else 0) + 0.5)
         self.ax_ports.grid(True, axis="x")
 
         # Block hit rate
@@ -189,16 +267,16 @@ class PerformanceGUI:
             self.ax_engage, presentations, "time_to_engage",
             "Time (s)",
             f"Time to engage stimulus  (door open → table sensor triggered; "
-            f"blue = {self._s1_label}, orange = {self._s2_label})")
+            f"{self._color_legend_text})")
         self._draw_presentation_bar(
             self.ax_sampling, presentations, "sampling_time",
             "Sampling time (s)",
-            f"Stimulus sampling time  (blue = {self._s1_label}, orange = {self._s2_label})",
+            f"Stimulus sampling time  ({self._color_legend_text})",
             show_labels=True)
         self._draw_presentation_bar(
             self.ax_bouts, presentations, "bout_count",
             "Bouts",
-            f"Number of sampling bouts  (blue = {self._s1_label}, orange = {self._s2_label})")
+            f"Number of sampling bouts  ({self._color_legend_text})")
 
         if conditioning is None or conditioning.empty:
             self.fig.canvas.draw()
@@ -210,6 +288,7 @@ class PerformanceGUI:
 
         # CC RT scatter, colored by port
         self.ax_cc_rt.clear()
+        plotted_any = False
         for port in ports_present:
             mask = valid & (conditioning["port"] == port)
             if mask.any():
@@ -218,11 +297,12 @@ class PerformanceGUI:
                     x, conditioning.loc[mask, "rt"],
                     color=_port_color(port), label=f"Port {port}", s=25, zorder=3
                 )
+                plotted_any = True
         self.ax_cc_rt.set_ylabel("RT (s)")
         self.ax_cc_rt.set_title("Conditioning RT", fontsize=10)
         self.ax_cc_rt.grid(True)
         self.ax_cc_rt.tick_params(labelbottom=False)
-        if ports_present:
+        if plotted_any:
             self.ax_cc_rt.legend(fontsize=8, loc="upper right")
 
         # CC misses — narrow row, same x-axis as the RT plot above
@@ -245,18 +325,26 @@ class PerformanceGUI:
 
     # ── Shared helpers ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _draw_presentation_bar(ax, presentations: pd.DataFrame, col: str,
+    def _draw_presentation_bar(self, ax, presentations: pd.DataFrame, col: str,
                                 ylabel: str, title: str, show_labels: bool = False):
         ax.clear()
+        n_expected = len(self._expected_periods)
+        if n_expected:
+            # Preload the full planned sequence: light color-coded backdrop per
+            # box/stim plus x-tick labels, so the upcoming order is visible
+            # before any data arrives. Real bars draw on top as trials complete.
+            for i, period in enumerate(self._expected_periods, start=1):
+                ax.axvspan(i - 0.45, i + 0.45, color=self._color_of_period(period),
+                           alpha=0.15, zorder=0, linewidth=0)
+            ax.set_xticks(range(1, n_expected + 1))
+            ax.set_xticklabels(self._expected_periods, rotation=90, fontsize=6)
+            ax.set_xlim(0.5, n_expected + 0.5)
+
         if not presentations.empty:
-            colors = [
-                "#2196F3" if str(p).startswith("S1") else "#FF9800"
-                for p in presentations["period"]
-            ]
+            colors = [self._color_of_period(p) for p in presentations["period"]]
             ax.bar(presentations["presentation_num"], presentations[col],
-                   color=colors, edgecolor="black")
-            if show_labels:
+                   color=colors, edgecolor="black", zorder=3)
+            if show_labels and not n_expected:
                 for _, row in presentations.iterrows():
                     ax.text(
                         row["presentation_num"], row[col] + 0.05,
@@ -334,6 +422,7 @@ class SensorGUI:
                                       fontsize=7, transform=self.ax.transAxes)
 
         plt.show(block=False)
+        _fit_figure_to_screen(self.fig)
 
     def update(self, snapshot):
         def _ts(t):

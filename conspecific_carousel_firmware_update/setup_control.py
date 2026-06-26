@@ -38,7 +38,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Carousel Setup Control")
-        self.resizable(False, True)
+        self.resizable(True, True)
         self.conn: DeviceConnection | None = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)

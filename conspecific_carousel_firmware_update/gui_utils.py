@@ -51,15 +51,16 @@ def make_scrollable(parent: tk.Widget) -> tk.Frame:
     return inner
 
 
-def fit_window_to_screen(scroll_frame: tk.Frame, margin: int = 80) -> None:
+def fit_window_to_screen(scroll_frame: tk.Frame, max_fraction: float = 0.85) -> None:
     """Size the scrollable canvas (and its toplevel) to fit the content,
-    capped to the screen size, and center the window.
+    capped to a comfortable fraction of the screen size, and center the window.
 
     `scroll_frame` is the frame returned by make_scrollable. Call once after
     all widgets have been added to it — a Canvas doesn't auto-size to its
     embedded content, so its actual required size must be measured from the
     inner frame and applied explicitly. Any overflow beyond the screen cap
-    remains reachable via the scrollbar.
+    remains reachable via the scrollbar. The window stays freely resizable —
+    this only sets the initial size so it doesn't fill a standard laptop screen.
     """
     canvas = scroll_frame.master
     root = canvas.winfo_toplevel()
@@ -71,8 +72,8 @@ def fit_window_to_screen(scroll_frame: tk.Frame, margin: int = 80) -> None:
     screen_h = root.winfo_screenheight()
 
     canvas.configure(
-        width=min(content_w, screen_w - margin),
-        height=min(content_h, screen_h - margin),
+        width=min(content_w, int(screen_w * max_fraction)),
+        height=min(content_h, int(screen_h * max_fraction)),
     )
 
     root.update_idletasks()
