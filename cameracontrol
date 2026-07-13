@@ -2,12 +2,22 @@
 Basler camera recording script
 - Records to a compressed H264 MP4 file (suitable for long recordings)
 - Sends a brief TTL pulse every 30 frames (~1 per second at 30 fps)
+- Logs a per-frame timestamp (frame_timestamps.csv), relative to --session-start
+  if given, so the video can be aligned with other timestamp files from the
+  same session
 - Shows a live preview window while recording
 - Press ENTER (or 'q' in the preview window) to stop
 
 Requirements: pip install pypylon opencv-python
+
+Standalone usage:  python cameracontrol
+Launched by another process (e.g. main_socialmemory.py), to share its session
+clock and write into its session folder:
+    python cameracontrol --session-start <epoch_seconds> --save-dir <path>
 """
 
+import argparse
+import csv
 from pypylon import pylon
 import cv2
 import os
@@ -46,10 +56,29 @@ def show_preview(frame, width, height) -> bool:
     cv2.imshow("Camera Preview", frame)
     return cv2.waitKey(1) & 0xFF == ord("q")
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Basler camera recording script")
+    parser.add_argument(
+        "--session-start", type=float, default=None,
+        help="Epoch seconds to use as t=0 for frame_timestamps.csv. "
+             "Defaults to this process's own start time (standalone use).",
+    )
+    parser.add_argument(
+        "--save-dir", type=str, default=SAVE_DIR,
+        help="Folder to save the video and frame_timestamps.csv into.",
+    )
+    return parser.parse_args()
+
 def main():
-    os.makedirs(SAVE_DIR, exist_ok=True)
+    args = parse_args()
+    session_start = args.session_start if args.session_start is not None else time.time()
+    save_dir = args.save_dir
+
+    os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join(SAVE_DIR, f"recording_{timestamp}.mp4")
+    video_path = os.path.join(save_dir, f"recording_{timestamp}.mp4")
+    timestamps_path = os.path.join(save_dir, "frame_timestamps.csv")
+    frame_timestamps = []
 
     camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
     camera.Open()
@@ -99,6 +128,7 @@ def main():
     # Write the first frame we already grabbed
     writer.write(first_frame)
     frame_count = 1
+    frame_timestamps.append(time.time() - session_start)
 
     # Stop flag controlled by keypress
     stop_flag = threading.Event()
@@ -116,39 +146,54 @@ def main():
     key_thread = threading.Thread(target=wait_for_enter, daemon=True)
     key_thread.start()
 
-    while camera.IsGrabbing() and not stop_flag.is_set():
-        try:
-            with camera.RetrieveResult(1000, pylon.TimeoutHandling_Return) as result:
-                if result and result.GrabSucceeded():
-                    frame = converter.Convert(result).GetArray()
-                    writer.write(frame)
-                    frame_count += 1
+    # try/finally guarantees the video is finalized and timestamps are written
+    # no matter how the loop ends — including a stray Ctrl+C reaching this
+    # process directly (KeyboardInterrupt isn't caught by "except Exception"
+    # below, so without this it would skip straight past all cleanup).
+    try:
+        while camera.IsGrabbing() and not stop_flag.is_set():
+            try:
+                with camera.RetrieveResult(1000, pylon.TimeoutHandling_Return) as result:
+                    if result and result.GrabSucceeded():
+                        frame = converter.Convert(result).GetArray()
+                        writer.write(frame)
+                        frame_count += 1
+                        frame_timestamps.append(time.time() - session_start)
 
-                    # TTL pulse every N frames
-                    if frame_count % PULSE_EVERY_N_FRAMES == 0:
-                        set_output(camera, True)
-                        time.sleep(PULSE_WIDTH_S)
-                        set_output(camera, False)
+                        # TTL pulse every N frames
+                        if frame_count % PULSE_EVERY_N_FRAMES == 0:
+                            set_output(camera, True)
+                            time.sleep(PULSE_WIDTH_S)
+                            set_output(camera, False)
 
-                    if SHOW_PREVIEW and frame_count % PREVIEW_EVERY_N_FRAMES == 0:
-                        if show_preview(frame, width, height):
-                            stop_flag.set()
+                        if SHOW_PREVIEW and frame_count % PREVIEW_EVERY_N_FRAMES == 0:
+                            if show_preview(frame, width, height):
+                                stop_flag.set()
 
-        except Exception as e:
-            print(f"Grab error: {e}")
-            break
+            except Exception as e:
+                print(f"Grab error: {e}")
+                break
+    except KeyboardInterrupt:
+        print("Interrupted — finalizing recording...")
+    finally:
+        writer.release()
+        camera.StopGrabbing()
+        camera.Close()
+        if SHOW_PREVIEW:
+            cv2.destroyAllWindows()
 
-    writer.release()
-    camera.StopGrabbing()
-    camera.Close()
-    if SHOW_PREVIEW:
-        cv2.destroyAllWindows()
+        with open(timestamps_path, "w", newline="") as f:
+            csv_writer = csv.writer(f)
+            csv_writer.writerow(["frame_num", "t_rel_s"])
+            csv_writer.writerows(
+                (i, f"{t:.3f}") for i, t in enumerate(frame_timestamps, start=1))
 
-    duration_s = frame_count / FRAME_RATE
-    size_mb = os.path.getsize(video_path) / (1024 * 1024)
-    print(f"Recording stopped.")
-    print(f"  Frames: {frame_count} ({duration_s:.1f} s)")
-    print(f"  File:   {video_path} ({size_mb:.1f} MB)")
+        duration_s = frame_count / FRAME_RATE
+        size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        print(f"Recording stopped.")
+        print(f"  Frames:     {frame_count} ({duration_s:.1f} s)")
+        print(f"  File:       {video_path} ({size_mb:.1f} MB)")
+        print(f"  Timestamps: {timestamps_path}")
 
 if __name__ == "__main__":
     main()

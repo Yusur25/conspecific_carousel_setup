@@ -50,12 +50,19 @@ class BaseSMSession:
         species: str,
         valve_times: dict,
         session_duration: float = None,
+        session_start: float = None,
     ):
         self.ser = ser
         self.shared = shared
         self.species = species
         self.valve_times = valve_times
         self.session_duration = session_duration
+        # t=0 reference for all timestamps written to result dataframes, shared
+        # with EventLogger/CameraTriggerLogger/cameracontrol so every output
+        # file from the same run lines up on one clock. Defaults to "now" so
+        # sessions built without an explicit session_start (e.g. ad-hoc tests)
+        # still work, just on their own clock.
+        self.session_start = session_start if session_start is not None else time.time()
 
         self.trial_counter = 0
         self.reward_count = 0
@@ -66,6 +73,13 @@ class BaseSMSession:
         # Used by subclasses that present stimuli on the turntable
         self._current_angle = 0
         self._presentation_counter = 0
+
+        # Optional manual door override (a threading.Event toggled by an operator
+        # key/button). When set, the end-of-presentation door close can be forced
+        # open to clear a mechanical failure/obstruction and then closed again to
+        # resume — see _run_presentation step 6 and hardware.close_door_safe.
+        # None (the default) leaves door closing fully automatic.
+        self.door_override = None
 
         # Guards reads/writes of results dataframes shared between the
         # session thread (appends rows) and the main thread (polls for the GUI).
@@ -155,16 +169,32 @@ class BaseSMSession:
             time.sleep(0.001)
         return None
 
-    def _wait_for_poke(self, port: str, deadline: float = None) -> bool:
-        """Block until port is triggered and held. Returns True on poke, False on stop/deadline."""
+    def _wait_for_poke(self, port: str, deadline: float = None,
+                       require_new_trigger: bool = False) -> bool:
+        """Block until port is triggered and held. Returns True on poke, False on stop/deadline.
+
+        If require_new_trigger is True, only a *new* trigger signal counts: the
+        port's last-event timestamp is snapshotted on entry, and a triggered state
+        is accepted only once that timestamp advances. So a stale trigger already
+        present at cue onset (electrical glitch or liquid bridging the beam) is
+        ignored — the animal must produce a fresh trigger event to be rewarded.
+        This does not rely on ever seeing the sensor 'clear', so a beam that stays
+        stuck triggered simply never counts rather than blocking on a release."""
+        # Timestamp of the port's most recent event when we start waiting; only a
+        # triggered event newer than this is treated as a genuine new poke.
+        ref_ts = None
+        if require_new_trigger:
+            _, ref_ts = self.shared.get_port(port)
         while True:
             if not self.running or STOP_EVENT.is_set():
                 return False
             if deadline is not None and time.time() >= deadline:
                 return False
-            state, _ = self.shared.get_port(port)
-            if state == "triggered" and sensor_held(self.shared, port):
-                return True
+            state, ts = self.shared.get_port(port)
+            if state == "triggered":
+                is_new = (not require_new_trigger) or (ts is not None and ts != ref_ts)
+                if is_new and sensor_held(self.shared, port):
+                    return True
             time.sleep(0.001)
 
     def _wait(self, duration: float) -> None:
@@ -281,9 +311,13 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
-        # 6. Close door safely (pauses if sensors active)
+        # 6. Close door safely (pauses if sensors active). The operator can
+        # toggle self.door_override here to force the door open on a mechanical
+        # failure/obstruction and then close it again; the wait below keeps
+        # blocking until the door is closed, so the session resumes gracefully.
         threading.Thread(
-            target=close_door_safe, args=(self.ser, self.shared), daemon=True
+            target=close_door_safe, args=(self.ser, self.shared),
+            kwargs={"override": self.door_override}, daemon=True,
         ).start()
         wait_for_door_state(self.shared, "door closed")
 
@@ -299,18 +333,20 @@ class BaseSMSession:
         self._turn_home_opposite(arrival_direction)
         wait_for_table_stopped(self.shared)
 
-        # Log
+        # Log — timestamps relative to session_start (s), matching
+        # sensor_events.csv / camera_sync.csv / frame_timestamps.csv so every
+        # output file from the same run shares one clock.
         row = {
             "presentation_num":    self._presentation_counter,
             "period":              period,
             "angle":               angle,
             "presentation_duration": duration,
-            "door_open_time":      door_open_time,
+            "door_open_time":      door_open_time - self.session_start,
             "time_to_engage":      pres_start - door_open_time,
             "sampling_time":       contact_time,
             "bout_count":          bout_count,
-            "presentation_start":  pres_start,
-            "presentation_end":    pres_end,
+            "presentation_start":  pres_start - self.session_start,
+            "presentation_end":    pres_end - self.session_start,
         }
         if extra_fields:
             row.update(extra_fields)
@@ -346,6 +382,7 @@ class BaseSMSession:
             shared=self.shared,
             species=self.species,
             valve_times=self.valve_times,
+            session_start=self.session_start,
             ports=self.cc_ports,
             led_on_time=self.cc_led_on_time,
             iti_min=self.cc_iti_min,

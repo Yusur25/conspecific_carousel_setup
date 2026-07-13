@@ -251,7 +251,11 @@ class EventLogger:
 
 class CameraTriggerLogger:
     """
-    Captures camera sync-pulse timestamps (register REG_CAM_A by default).
+    Logs camera sync-pulse timestamps (register REG_CAM_A by default) for the
+    whole session, independent of mode, presentations, or anything the
+    animal does in the box — it runs continuously for as long as the camera
+    and device connection are up, the same way EventLogger logs door/table/IR
+    events regardless of task state.
 
     The pulse comes from cameracontrol's UserOutput1/Line2 — a brief TTL fired
     once every PULSE_EVERY_N_FRAMES video frames (~1 Hz at 30 fps), not a
@@ -260,66 +264,50 @@ class CameraTriggerLogger:
     pulses drifts from the expected N/frame_rate seconds), not a per-frame
     timestamp list.
 
-    The on-event callback is still kept deliberately minimal — it only
-    appends a float to an in-memory list under a lock, with no disk I/O —
-    since it runs on DeviceConnection's serial reader thread, where any
-    blocking work would risk delaying ACK/event processing for the door,
-    table and IR sensors.
+    Only rising-edge events (value=1) count as a pulse; value=0 is ignored.
+    This isn't really "edge detection" in the level-sensor sense (no previous-
+    value comparison) — it's a plain value filter, because the firmware (see
+    conspecific-carousel/firmware main.py + utility.py's EventPin) fires its
+    hard IRQ on both edges, but each pin has a single asyncio.Event flag
+    processed one at a time; with cameracontrol's ~1 ms pulse width, the
+    falling edge's interrupt routinely fires before the firmware finishes
+    processing the rising edge and clears that flag, so the second .set() is
+    silently absorbed. In practice the firmware almost never reports a
+    matching value=0 for a given pulse — but filtering on value here means we
+    don't rely on that being guaranteed.
 
-    Recording is gated by arm()/disarm() so only a bounded window (e.g. one
-    stimulus presentation) is kept; call sites elsewhere just call disarm()
-    and get back the sync-pulse timestamps for that window.
+    Each pulse is written immediately, one line per event, directly to
+    log_path (same pattern as EventLogger._log) so pulses already captured
+    are safe on disk even if the program is interrupted before a clean
+    shutdown.
 
     Usage:
-        camera_logger = CameraTriggerLogger(session_start=session_start)
+        camera_logger = CameraTriggerLogger(log_path=camera_sync_path,
+                                             session_start=session_start)
         device.on_event(camera_logger)
-        ...
-        camera_logger.arm()
-        ... (presentation window) ...
-        pulse_times = camera_logger.disarm()
     """
 
     def __init__(
         self,
+        log_path: str,
         session_start: float,
         register: int = REG_CAM_A,
-        edge: str = "rising",
     ):
-        if edge not in ("rising", "falling"):
-            raise ValueError("edge must be 'rising' or 'falling'")
         self._register = register
-        self._trigger_value = 1 if edge == "rising" else 0
         self._session_start = session_start
-        self._lock = threading.Lock()
-        self._armed = False
-        self._prev_value: Optional[int] = None
-        self._timestamps: List[float] = []
-
-    def arm(self) -> None:
-        """Start keeping sync-pulse timestamps from this point on."""
-        with self._lock:
-            self._armed = True
-            self._timestamps = []
-
-    def disarm(self) -> List[float]:
-        """Stop keeping sync-pulse timestamps; return and clear the buffered window."""
-        with self._lock:
-            self._armed = False
-            timestamps, self._timestamps = self._timestamps, []
-        return timestamps
+        self._log_path = log_path
+        self._pulse_count = 0
+        with open(self._log_path, "w", encoding="utf-8") as f:
+            f.write("pulse_num,t_rel_s\n")
 
     # Called by DeviceConnection's reader thread for every MSG_EVENT packet
     def __call__(self, register: int, value: int) -> None:
-        if register != self._register:
-            return
-        prev_value = self._prev_value
-        self._prev_value = value
-        if prev_value is None or value == prev_value or value != self._trigger_value:
+        if register != self._register or value != 1:
             return
         t = time.time() - self._session_start
-        with self._lock:
-            if self._armed:
-                self._timestamps.append(t)
+        self._pulse_count += 1
+        with open(self._log_path, "a", encoding="utf-8") as f:
+            f.write(f"{self._pulse_count},{t:.3f}\n")
 
 
 # ── Hardware control functions ────────────────────────────────────────────────
@@ -342,9 +330,11 @@ def incremental_reward(
     valve_start: float,
     reward_count: int,
     increment: float = 0.033,
+    max_valve_time: float = 2.0,
 ) -> float:
-    """Open valve for an incrementally longer time on each reward. Returns actual valve time."""
-    valve_time = valve_start + (reward_count * increment)
+    """Open valve for an incrementally longer time on each reward, capped at
+    max_valve_time seconds. Returns actual valve time."""
+    valve_time = min(valve_start + (reward_count * increment), max_valve_time)
     reg = PORT_REGS[port]["valve"]
     device.write_register(reg, 1)
     time.sleep(valve_time)
@@ -494,6 +484,7 @@ def close_door_safe(
     device: DeviceConnection,
     shared: SharedSensorState,
     poll_interval: float = 0.02,
+    override: Optional[threading.Event] = None,
 ) -> None:
     """Close the door with active sensor monitoring.
 
@@ -506,11 +497,48 @@ def close_door_safe(
     Intended to be called inside a daemon thread so the trial loop is not
     blocked:
         threading.Thread(target=close_door_safe, args=(ser, shared), daemon=True).start()
+
+    Manual override (mechanical-failure recovery)
+    ---------------------------------------------
+    If `override` (a threading.Event toggled by an operator key/button) is
+    supplied, each toggle flips the door between two states while this function
+    is closing:
+      • 1st toggle → force the door fully OPEN and hold it (halting the close),
+                     so the operator can clear an obstruction/jam.
+      • 2nd toggle → resume the safe close.
+    This can repeat as many times as needed. Any override press that arrives
+    before this close starts is discarded (the event is cleared on entry). When
+    no override is supplied — or it is never toggled — the door closes exactly
+    as before. Because this function still only returns once the door reaches
+    'door closed', a caller waiting on that state resumes gracefully after the
+    operator finishes.
     """
-    paused = False
+    paused = False       # auto-paused because a proximity sensor is triggered
+    forced_open = False  # operator override is currently holding the door open
+    if override is not None:
+        override.clear()  # ignore any stale press from before this close began
     device.write_register(REG_DOOR_CMD, 0x01)  # initial close command
 
     while not STOP_EVENT.is_set():
+        # ── Operator override toggle ──────────────────────────────────────────
+        if override is not None and override.is_set():
+            override.clear()
+            forced_open = not forced_open
+            if forced_open:
+                device.write_register(REG_DOOR_CMD, 0x00)  # force open
+                paused = False
+                print("[OVERRIDE] Door forced OPEN — clear the obstruction, "
+                      "then press the override key again to close and resume")
+            else:
+                device.write_register(REG_DOOR_CMD, 0x01)  # resume close
+                print("[OVERRIDE] Override released — door closing, resuming program")
+
+        if forced_open:
+            # Hold the door open until the operator toggles again; skip the
+            # normal sensor/close logic so nothing re-closes it underneath them.
+            time.sleep(poll_interval)
+            continue
+
         door_state, _ = shared.get_port("door")
         if door_state == "door closed":
             return

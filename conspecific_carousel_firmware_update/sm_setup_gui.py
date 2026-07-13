@@ -8,7 +8,7 @@
 import json
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 from utils import parse_motor_speed
 from gui_utils import make_scrollable, fit_window_to_screen
@@ -114,6 +114,7 @@ class SMSetupDialog:
         s = {
             "species": self._species_var.get(),
             "mode":    self._mode_var.get(),
+            "auto_reward": self._auto_reward_var.get(),
         }
         for k, v in self._vars.items():
             s[k] = v.get()
@@ -149,6 +150,8 @@ class SMSetupDialog:
         if "mode" in s:
             self._mode_var.set(s["mode"])
             self._on_mode_change()
+        if "auto_reward" in s:
+            self._auto_reward_var.set(s["auto_reward"])
         for k, v in self._vars.items():
             if k in s:
                 v.set(s[k])
@@ -222,14 +225,26 @@ class SMSetupDialog:
             self._vars[key] = v
             self._row(root, label, v, row=3 + i, width=20)
 
+        # Save folder (with browse button) — session data (CSVs, metadata,
+        # camera recording) is saved under <save_root>/<animal>_..._<datetime>/
+        default_save_root = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "SocialMemoryData")
+        self._vars["save_root"] = tk.StringVar(value=default_save_root)
+        tk.Label(root, text="Save Folder:", anchor="w").grid(
+            row=7, column=0, sticky="w", **pad)
+        tk.Entry(root, textvariable=self._vars["save_root"], width=20).grid(
+            row=7, column=1, sticky="w", **pad)
+        tk.Button(root, text="Browse...", command=self._browse_save_root).grid(
+            row=7, column=2, sticky="w", **pad)
+
         ttk.Separator(root, orient="horizontal").grid(
-            row=7, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=8, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # Mode
         tk.Label(root, text="Mode:", anchor="w").grid(
-            row=8, column=0, sticky="w", **pad)
+            row=9, column=0, sticky="w", **pad)
         mf = tk.Frame(root)
-        mf.grid(row=8, column=1, columnspan=3, sticky="w", **pad)
+        mf.grid(row=9, column=1, columnspan=3, sticky="w", **pad)
         for label, value in (("Training", "training"), ("Task", "task"),
                               ("Passive Test", "passivetest")):
             tk.Radiobutton(mf, text=label, variable=self._mode_var,
@@ -237,11 +252,11 @@ class SMSetupDialog:
                            command=self._on_mode_change).pack(side="left", padx=4)
 
         ttk.Separator(root, orient="horizontal").grid(
-            row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # ── Motor speeds (always visible) ─────────────────────────────────────
         speed_frame = tk.LabelFrame(root, text="Motor Speeds (0-255)", padx=8, pady=6)
-        speed_frame.grid(row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        speed_frame.grid(row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         for i, (label, key) in enumerate([
             ("Door Open Speed:",  "door_open_speed"),
             ("Door Close Speed:", "door_close_speed"),
@@ -256,13 +271,13 @@ class SMSetupDialog:
             row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
 
         ttk.Separator(root, orient="horizontal").grid(
-            row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # ── Training frame ────────────────────────────────────────────────────
         self._training_frame = tk.LabelFrame(
             root, text="Training Parameters", padx=8, pady=6)
         self._training_frame.grid(
-            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # Port selection checkboxes
         tk.Label(self._training_frame, text="Ports:", anchor="w").grid(
@@ -303,11 +318,24 @@ class SMSetupDialog:
                  font=("Arial", 8), fg="gray").grid(
             row=9, column=0, columnspan=4, sticky="w", padx=6)
 
+        # No-LED auto-reward option: LEDs stay off and a reward is delivered
+        # whenever the animal pokes any selected port (LED on time is ignored).
+        self._auto_reward_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self._training_frame,
+                       text="No LED — auto-reward any poked port",
+                       variable=self._auto_reward_var).grid(
+            row=10, column=0, columnspan=4, sticky="w", padx=6, pady=(6, 0))
+        tk.Label(self._training_frame,
+                 text="(LEDs stay off; a reward is delivered whenever the animal "
+                      "pokes any selected port. 'LED on time' is ignored.)",
+                 font=("Arial", 8), fg="gray").grid(
+            row=11, column=0, columnspan=4, sticky="w", padx=6)
+
         # ── Task frame ────────────────────────────────────────────────────────
         self._task_frame = tk.LabelFrame(
             root, text="Task Parameters", padx=8, pady=6)
         self._task_frame.grid(
-            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # S1 sub-frame
         s1f = tk.LabelFrame(self._task_frame, text="S1 (familiar stimulus)",
@@ -398,7 +426,7 @@ class SMSetupDialog:
         self._passive_frame = tk.LabelFrame(
             root, text="Passive Test Parameters", padx=8, pady=6)
         self._passive_frame.grid(
-            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # Box sub-frame: label + # presentations for each of the 4 boxes
         boxf = tk.LabelFrame(self._passive_frame, text="Boxes", padx=6, pady=4)
@@ -474,15 +502,15 @@ class SMSetupDialog:
 
         # ── Notes ─────────────────────────────────────────────────────────────
         ttk.Separator(root, orient="horizontal").grid(
-            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=14, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         tk.Label(root, text="Notes:", anchor="w").grid(
-            row=14, column=0, sticky="nw", **pad)
+            row=15, column=0, sticky="nw", **pad)
         self._notes = tk.Text(root, width=40, height=3, font=("Arial", 9))
-        self._notes.grid(row=14, column=1, columnspan=3, sticky="ew", **pad)
+        self._notes.grid(row=15, column=1, columnspan=3, sticky="ew", **pad)
 
         # ── Buttons ───────────────────────────────────────────────────────────
         bf = tk.Frame(root)
-        bf.grid(row=15, column=0, columnspan=4, pady=(8, 14))
+        bf.grid(row=16, column=0, columnspan=4, pady=(8, 14))
         tk.Button(bf, text="Start Session", bg="#4CAF50", fg="white",
                   font=("Arial", 11, "bold"), width=18,
                   command=self._on_start).pack(side="left", padx=8)
@@ -537,6 +565,14 @@ class SMSetupDialog:
         for p in "ABC":
             self._passive_vars[f"valve_time_{p}"].set(str(d[f"valve_time_{p}"]))
 
+    def _browse_save_root(self):
+        chosen = filedialog.askdirectory(
+            initialdir=self._vars["save_root"].get() or os.getcwd(),
+            title="Choose folder to save session data into",
+        )
+        if chosen:
+            self._vars["save_root"].set(chosen)
+
     def _on_mode_change(self):
         mode = self._mode_var.get()
         self._training_frame.grid_remove()
@@ -561,6 +597,10 @@ class SMSetupDialog:
         port      = self._vars["port"].get().strip()
         if not port:
             errors.append("Serial port is required.")
+
+        save_root = self._vars["save_root"].get().strip()
+        if not save_root:
+            errors.append("Save folder is required.")
 
         try:
             baud = int(self._vars["baud"].get())
@@ -614,6 +654,7 @@ class SMSetupDialog:
                 "species":         self._species_var.get(),
                 "animal":          animal,
                 "session_n":       session_n,
+                "save_root":       save_root,
                 "port":            port,
                 "baud":            baud,
                 "door_open_speed": door_open_speed,
@@ -626,6 +667,7 @@ class SMSetupDialog:
                 "reward_prob":     reward_prob,
                 "valve_times":     {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
                 "session_duration":session_duration,
+                "auto_reward":     self._auto_reward_var.get(),
                 "notes":           self._notes.get("1.0", "end").strip(),
             }
 
@@ -684,6 +726,7 @@ class SMSetupDialog:
                 "species":       self._species_var.get(),
                 "animal":        animal,
                 "session_n":     session_n,
+                "save_root":     save_root,
                 "port":          port,
                 "baud":          baud,
                 "door_open_speed": door_open_speed,
@@ -773,6 +816,7 @@ class SMSetupDialog:
                 "species":         self._species_var.get(),
                 "animal":          animal,
                 "session_n":       session_n,
+                "save_root":       save_root,
                 "port":            port,
                 "baud":            baud,
                 "door_open_speed": door_open_speed,

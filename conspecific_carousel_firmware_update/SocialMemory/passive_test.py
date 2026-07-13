@@ -116,8 +116,9 @@ class PassiveTestSession(BaseSMSession):
         cc_reward_prob: float = 1.0,
         cc_delay: float = 0.0,
         sequence: list = None,
+        session_start: float = None,
     ):
-        super().__init__(ser, shared, species, valve_times)
+        super().__init__(ser, shared, species, valve_times, session_start=session_start)
         if len(box_ids) != N_BOXES or len(box_n) != N_BOXES:
             raise ValueError(f"box_ids and box_n must each have {N_BOXES} entries")
 

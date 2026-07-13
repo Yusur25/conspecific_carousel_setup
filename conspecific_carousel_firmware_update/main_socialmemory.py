@@ -14,6 +14,9 @@ import time
 import signal
 import os
 import json
+import subprocess
+import sys
+import threading
 from datetime import datetime
 
 from serial_comm import DeviceConnection
@@ -22,6 +25,40 @@ from hardware import (
     turn_table_degrees, apply_motor_speeds,
 )
 from sm_setup_gui import SMSetupDialog
+
+# cameracontrol lives at the repo root, one level up from this file's folder.
+CAMERACONTROL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cameracontrol")
+
+# Keyboard key the operator presses (with a GUI window focused) to toggle the
+# manual door override during task/passivetest sessions: press once to force the
+# door open on a mechanical failure/obstruction, press again to close it and
+# resume. See _bind_door_override and hardware.close_door_safe.
+DOOR_OVERRIDE_KEY = "d"
+
+
+def _bind_door_override(override_event, *guis):
+    """Let the operator toggle `override_event` by pressing DOOR_OVERRIDE_KEY on
+    any of the given matplotlib GUI windows (whichever currently has focus).
+
+    Also removes DOOR_OVERRIDE_KEY from matplotlib's default keyboard shortcuts
+    so pressing it doesn't also trigger a built-in figure action.
+    """
+    import matplotlib.pyplot as plt
+    for param, keys in list(plt.rcParams.items()):
+        if param.startswith("keymap.") and DOOR_OVERRIDE_KEY in keys:
+            keys.remove(DOOR_OVERRIDE_KEY)
+
+    def _handler(event):
+        if event.key == DOOR_OVERRIDE_KEY:
+            override_event.set()
+            print(f"[OVERRIDE] Door override key '{DOOR_OVERRIDE_KEY}' pressed")
+
+    for gui in guis:
+        try:
+            gui.fig.canvas.mpl_connect("key_press_event", _handler)
+        except Exception as e:
+            print(f"[WARN] Could not bind door override key on a GUI: {e}")
 
 
 def handle_sigint(_sig, _frame):
@@ -39,6 +76,63 @@ def _save_metadata(save_dir, params):
     with open(path, "w") as f:
         json.dump(meta, f, indent=2, default=str)
     print(f"[INFO] Metadata saved: {path}")
+
+
+def _start_camera_recording(session_start: float, save_dir: str):
+    """Launch cameracontrol as a background subprocess, sharing this session's
+    clock (so its frame_timestamps.csv lines up with sensor_events.csv etc.)
+    and writing directly into this session's save folder. Returns the Popen
+    handle, or None if the camera couldn't be started (non-fatal — the
+    behavioral session continues without video)."""
+    try:
+        # On Windows, a child process shares the parent's console by default,
+        # so Ctrl+C would hit cameracontrol directly too (bypassing its own
+        # cleanup). Putting it in its own process group means it only ever
+        # stops via the explicit stdin signal below.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        proc = subprocess.Popen(
+            [sys.executable, CAMERACONTROL_PATH,
+             "--session-start", str(session_start),
+             "--save-dir", save_dir],
+            stdin=subprocess.PIPE,
+            creationflags=creationflags,
+        )
+        print(f"[INFO] Camera recording started (PID {proc.pid}) → {save_dir}")
+        return proc
+    except Exception as e:
+        print(f"[WARN] Could not start camera recording: {e}")
+        return None
+
+
+def _stop_camera_recording(proc, timeout: float = 15.0):
+    """Signal cameracontrol to stop (as if ENTER were pressed) and wait for a
+    clean exit; escalates to terminate/kill if it doesn't stop in time."""
+    if proc is None:
+        return
+    print("[INFO] Stopping camera recording...")
+    try:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.write(b"\n")
+            proc.stdin.flush()
+    except Exception:
+        pass  # pipe may already be broken if the process already exited
+    finally:
+        try:
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        except Exception:
+            pass
+
+    try:
+        proc.wait(timeout=timeout)
+        print("[INFO] Camera recording stopped cleanly")
+    except subprocess.TimeoutExpired:
+        print("[WARN] Camera process did not stop in time — terminating")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def _run_loop_training(session, shared, sensor_gui, perf_gui,
@@ -67,7 +161,7 @@ def _run_loop_task(session, shared, sensor_gui, perf_gui):
 
 
 def main():
-    # ── Setup GUI ─────────────────────────────────────────────────────────────
+    # ── Setup GUI (parameter GUI) ─────────────────────────────────────────────
     dialog = SMSetupDialog()
     params = dialog.run()
 
@@ -82,26 +176,36 @@ def main():
     port      = params["port"]
     baud      = params["baud"]
 
-    from SocialMemory.training     import ClassicalConditioningSession
+    from SocialMemory.training     import ClassicalConditioningSession, AutoRewardSession
     from SocialMemory.task         import SocialMemoryTaskSession
     from SocialMemory.passive_test import PassiveTestSession, generate_box_sequence, label_sequence
     from gui_socialmemory           import SensorGUI, PerformanceGUI
 
-    # ── Output directory + metadata ───────────────────────────────────────────
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    # ── Session clock + output directory ──────────────────────────────────────
+    # Established now (right after the parameter GUI closes, before camera
+    # recording or the task GUIs) so every timestamp from this session —
+    # sensor events, camera sync pulses, and cameracontrol's own frame
+    # timestamps — shares one t=0.
+    session_start = time.time()
+    timestamp_str = datetime.fromtimestamp(session_start).strftime("%Y%m%d_%H%M%S")
+    save_root = params.get("save_root") or "SocialMemoryData"
     BASE_SAVE_DIR = os.path.join(
-        "SocialMemoryData",
-        f"{animal}_{session_n}_{mode}_{date_str}_{species}",
+        save_root,
+        f"{animal}_{session_n}_{mode}_{species}_{timestamp_str}",
     )
     os.makedirs(BASE_SAVE_DIR, exist_ok=True)
     print(f"[INFO] Saving to: {BASE_SAVE_DIR}")
 
-    params["date"]     = date_str
+    params["date"]     = timestamp_str
     params["save_dir"] = BASE_SAVE_DIR
     _save_metadata(BASE_SAVE_DIR, params)
 
     sensor_log   = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
+    camera_sync_log = os.path.join(BASE_SAVE_DIR, "camera_sync.csv")
     perf_fig     = os.path.join(BASE_SAVE_DIR, "performance.png")
+
+    # ── Start camera recording (before device connect / task GUIs) ───────────
+    camera_proc = _start_camera_recording(session_start, BASE_SAVE_DIR)
 
     # ── Connect to device ─────────────────────────────────────────────────────
     try:
@@ -110,6 +214,7 @@ def main():
         time.sleep(2)
     except Exception as e:
         print(f"[ERROR] Cannot open serial port: {e}")
+        _stop_camera_recording(camera_proc)
         return
 
     apply_motor_speeds(
@@ -121,7 +226,6 @@ def main():
 
     # ── Shared state + event logger ───────────────────────────────────────────
     shared = SharedSensorState()
-    session_start = time.time()
     logger = EventLogger(
         shared,
         event_log_path=sensor_log,
@@ -130,12 +234,17 @@ def main():
     device.on_event(logger)
 
     # Camera sync-pulse timestamps (~1 Hz heartbeat from cameracontrol, not a
-    # per-frame strobe) — only armed during task-mode passive stimulus
-    # presentations (see SocialMemoryTaskSession._run_presentation).
-    camera_logger = CameraTriggerLogger(session_start=session_start)
+    # per-frame strobe) — logged continuously for the whole session, the same
+    # way EventLogger logs sensor events, independent of mode/presentations/
+    # animal behavior.
+    camera_logger = CameraTriggerLogger(
+        log_path=camera_sync_log,
+        session_start=session_start,
+    )
     device.on_event(camera_logger)
+    print(f"[INFO] Camera sync-pulse log: {camera_sync_log}")
 
-    # ── GUIs ──────────────────────────────────────────────────────────────────
+    # ── GUIs (task-related GUIs) ──────────────────────────────────────────────
     sensor_gui = SensorGUI()
     box_labels = None
     expected_periods = None
@@ -159,20 +268,36 @@ def main():
     # ── Run session ───────────────────────────────────────────────────────────
     try:
         if mode == "training":
-            session = ClassicalConditioningSession(
-                ser=device,
-                shared=shared,
-                species=species,
-                valve_times=params["valve_times"],
-                ports=params["ports"],
-                led_on_time=params["led_on_time"],
-                iti_min=params["iti_min"],
-                iti_max=params["iti_max"],
-                reward_prob=params["reward_prob"],
-                session_duration=params.get("session_duration"),
-            )
+            if params.get("auto_reward"):
+                session = AutoRewardSession(
+                    ser=device,
+                    shared=shared,
+                    species=species,
+                    valve_times=params["valve_times"],
+                    ports=params["ports"],
+                    iti_min=params["iti_min"],
+                    iti_max=params["iti_max"],
+                    reward_prob=params["reward_prob"],
+                    session_duration=params.get("session_duration"),
+                    session_start=session_start,
+                )
+            else:
+                session = ClassicalConditioningSession(
+                    ser=device,
+                    shared=shared,
+                    species=species,
+                    valve_times=params["valve_times"],
+                    ports=params["ports"],
+                    led_on_time=params["led_on_time"],
+                    iti_min=params["iti_min"],
+                    iti_max=params["iti_max"],
+                    reward_prob=params["reward_prob"],
+                    session_duration=params.get("session_duration"),
+                    session_start=session_start,
+                )
             session.start()
-            print(f"[INFO] Training started on ports {params['ports']} — "
+            mode_desc = "Auto-reward (no LED)" if params.get("auto_reward") else "Training"
+            print(f"[INFO] {mode_desc} started on ports {params['ports']} — "
                   f"Ctrl+C to stop")
             _run_loop_training(
                 session, shared, sensor_gui, perf_gui,
@@ -201,10 +326,15 @@ def main():
                 cc_iti_max=params["cc_iti_max"],
                 cc_reward_prob=params["cc_reward_prob"],
                 cc_delay=params.get("cc_delay", 0.0),
-                camera_logger=camera_logger,
+                session_start=session_start,
             )
+            door_override = threading.Event()
+            session.door_override = door_override
+            _bind_door_override(door_override, sensor_gui, perf_gui)
             session.start()
-            print("[INFO] Task started — Ctrl+C to stop")
+            print(f"[INFO] Task started — Ctrl+C to stop "
+                  f"(press '{DOOR_OVERRIDE_KEY}' with a GUI window focused to "
+                  f"force the door open/closed on a jam)")
             _run_loop_task(session, shared, sensor_gui, perf_gui)
 
         elif mode == "passivetest":
@@ -225,9 +355,15 @@ def main():
                 cc_reward_prob=params["cc_reward_prob"],
                 cc_delay=params.get("cc_delay", 0.0),
                 sequence=passive_sequence,
+                session_start=session_start,
             )
+            door_override = threading.Event()
+            session.door_override = door_override
+            _bind_door_override(door_override, sensor_gui, perf_gui)
             session.start()
-            print("[INFO] Passive test started — Ctrl+C to stop")
+            print(f"[INFO] Passive test started — Ctrl+C to stop "
+                  f"(press '{DOOR_OVERRIDE_KEY}' with a GUI window focused to "
+                  f"force the door open/closed on a jam)")
             _run_loop_task(session, shared, sensor_gui, perf_gui)
 
         else:
@@ -242,7 +378,7 @@ def main():
 
             if mode == "training":
                 csv_path = os.path.join(BASE_SAVE_DIR, "trials.csv")
-                session.results_df.to_csv(csv_path, index=False)
+                session.results_df.to_csv(csv_path, index=False, float_format="%.3f")
                 print(f"[INFO] Trials saved: {csv_path}")
                 # Final GUI update
                 perf_gui.update(session.snapshot(session.results_df))
@@ -250,16 +386,10 @@ def main():
             elif mode in ("task", "passivetest"):
                 pres_path = os.path.join(BASE_SAVE_DIR, "presentations.csv")
                 cc_path   = os.path.join(BASE_SAVE_DIR, "conditioning_trials.csv")
-            elif mode == "task":
-                pres_path   = os.path.join(BASE_SAVE_DIR, "presentations.csv")
-                cc_path     = os.path.join(BASE_SAVE_DIR, "conditioning_trials.csv")
-                camera_path = os.path.join(BASE_SAVE_DIR, "camera_sync.csv")
-                session.presentations_df.to_csv(pres_path, index=False)
-                session.conditioning_df.to_csv(cc_path, index=False)
-                session.camera_sync_df.to_csv(camera_path, index=False)
+                session.presentations_df.to_csv(pres_path, index=False, float_format="%.3f")
+                session.conditioning_df.to_csv(cc_path, index=False, float_format="%.3f")
                 print(f"[INFO] Presentations saved: {pres_path}")
                 print(f"[INFO] Conditioning trials saved: {cc_path}")
-                print(f"[INFO] Camera sync-pulse timestamps saved: {camera_path}")
                 perf_gui.update(session.snapshot(session.presentations_df),
                                  session.snapshot(session.conditioning_df))
 
@@ -294,6 +424,7 @@ def main():
         device.disconnect()
         perf_gui.close(save_path=perf_fig)
         sensor_gui.close()
+        _stop_camera_recording(camera_proc)
         print("[INFO] Clean shutdown complete")
 
 
