@@ -205,7 +205,13 @@ def main():
     perf_fig     = os.path.join(BASE_SAVE_DIR, "performance.png")
 
     # ── Start camera recording (before device connect / task GUIs) ───────────
-    camera_proc = _start_camera_recording(session_start, BASE_SAVE_DIR)
+    # Optional — only started if the operator checked "Record camera" in the
+    # setup GUI (_stop_camera_recording is a no-op on a None handle).
+    camera_proc = None
+    if params.get("record_camera", True):
+        camera_proc = _start_camera_recording(session_start, BASE_SAVE_DIR)
+    else:
+        print("[INFO] Camera recording disabled (not checked in setup)")
 
     # ── Connect to device ─────────────────────────────────────────────────────
     try:

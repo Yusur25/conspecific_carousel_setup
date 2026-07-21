@@ -115,6 +115,7 @@ class SMSetupDialog:
             "species": self._species_var.get(),
             "mode":    self._mode_var.get(),
             "auto_reward": self._auto_reward_var.get(),
+            "record_camera": self._camera_var.get(),
         }
         for k, v in self._vars.items():
             s[k] = v.get()
@@ -152,6 +153,8 @@ class SMSetupDialog:
             self._on_mode_change()
         if "auto_reward" in s:
             self._auto_reward_var.set(s["auto_reward"])
+        if "record_camera" in s:
+            self._camera_var.set(s["record_camera"])
         for k, v in self._vars.items():
             if k in s:
                 v.set(s[k])
@@ -269,6 +272,12 @@ class SMSetupDialog:
                  text="(blank or 'off' = leave unset — for firmware without speed control)",
                  font=("Arial", 8), fg="gray").grid(
             row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+
+        # Camera recording (optional, applies to all modes)
+        self._camera_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(speed_frame, text="Record camera",
+                       variable=self._camera_var).grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 0))
 
         ttk.Separator(root, orient="horizontal").grid(
             row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
@@ -836,6 +845,8 @@ class SMSetupDialog:
                 "valve_times":     {"A": valve_time_A, "B": valve_time_B, "C": valve_time_C},
                 "notes":           self._notes.get("1.0", "end").strip(),
             }
+
+        self.result["record_camera"] = self._camera_var.get()
 
         self._save_settings()
         self.root.destroy()

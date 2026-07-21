@@ -12,8 +12,9 @@
 #   2. Door opens
 #   3. Sampling timer starts when table beam first broken
 #   4. After presentation_duration s: turntable rotates 45° CCW (removes stimulus)
-#   5. Door closes safely (pauses if table or door proximity sensors are active)
-#   6. Wait for door fully closed and table motor stopped
+#   5. Door closes safely in the background (pauses if table or door proximity
+#      sensors are active) — the session does not wait for it to finish
+#   6. Wait for table motor stopped
 #   7. Turntable returns to home (0°) for the ITI
 #
 # Between presentations (CC ITI):

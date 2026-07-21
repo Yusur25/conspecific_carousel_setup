@@ -311,15 +311,16 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
-        # 6. Close door safely (pauses if sensors active). The operator can
-        # toggle self.door_override here to force the door open on a mechanical
-        # failure/obstruction and then close it again; the wait below keeps
-        # blocking until the door is closed, so the session resumes gracefully.
+        # 6. Close door safely (pauses if sensors active), in the background.
+        # The operator can still toggle self.door_override to force the door
+        # open on a mechanical failure/obstruction and then close it again.
+        # The session does NOT block on the door reaching "door closed" —
+        # closing continues gracefully on its own, but the next trial (CC,
+        # next presentation, etc.) is free to proceed immediately.
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared),
             kwargs={"override": self.door_override}, daemon=True,
         ).start()
-        wait_for_door_state(self.shared, "door closed")
 
         # 7. Ensure table motor stopped before next presentation
         wait_for_table_stopped(self.shared)
@@ -352,7 +353,7 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
-        print(f"[INFO] {period}: door closed, table at home")
+        print(f"[INFO] {period}: table at home (door closing in background)")
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
