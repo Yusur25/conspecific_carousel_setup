@@ -485,14 +485,22 @@ def close_door_safe(
     shared: SharedSensorState,
     poll_interval: float = 0.02,
     override: Optional[threading.Event] = None,
+    timeout: Optional[float] = None,
 ) -> None:
     """Close the door with active sensor monitoring.
 
     Sends the close command then continuously monitors the door proximity
     sensor and the table sensor.  If either triggers during closing the door
     is stopped immediately.  Once both sensors are clear again closing
-    resumes automatically.  Blocks until the door reaches 'door closed' or
-    STOP_EVENT is set.
+    resumes automatically.  Blocks until the door reaches 'door closed',
+    `timeout` seconds elapse, or STOP_EVENT is set.
+
+    `timeout` (None = wait indefinitely, the historical behavior) bounds how
+    long to keep polling for a 'door closed' status that may never arrive —
+    e.g. the event was dropped, or the device stopped reporting altogether.
+    Without it this loop, and any caller waiting on the same state, would spin
+    for the rest of the session.  Time spent held open by `override` does not
+    count against it (see below).
 
     Intended to be called inside a daemon thread so the trial loop is not
     blocked:
@@ -519,6 +527,8 @@ def close_door_safe(
         override.clear()  # ignore any stale press from before this close began
     device.write_register(REG_DOOR_CMD, 0x01)  # initial close command
 
+    deadline = None if timeout is None else time.time() + timeout
+
     while not STOP_EVENT.is_set():
         # ── Operator override toggle ──────────────────────────────────────────
         if override is not None and override.is_set():
@@ -536,11 +546,20 @@ def close_door_safe(
         if forced_open:
             # Hold the door open until the operator toggles again; skip the
             # normal sensor/close logic so nothing re-closes it underneath them.
+            # The operator is deliberately holding it, so restart the timeout
+            # clock rather than expiring while they clear the obstruction.
+            if deadline is not None:
+                deadline = time.time() + timeout
             time.sleep(poll_interval)
             continue
 
         door_state, _ = shared.get_port("door")
         if door_state == "door closed":
+            return
+
+        if deadline is not None and time.time() > deadline:
+            print(f"[WARNING] Door not confirmed closed within {timeout:.0f} s "
+                  f"(last known state: '{door_state}') — giving up on this close")
             return
 
         doorsensor_state, _ = shared.get_port("doorsensor")

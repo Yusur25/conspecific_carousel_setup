@@ -164,6 +164,12 @@ def main():
     # ── Setup GUI (parameter GUI) ─────────────────────────────────────────────
     dialog = SMSetupDialog()
     params = dialog.run()
+    # Drop the dialog's Tcl interpreter now that the params are out. Destroying
+    # its root window doesn't tear down ttk's hidden theme-monitor window — only
+    # releasing the interpreter does — and an orphaned monitor re-runs
+    # ttk::ThemeChanged against a destroyed "." on every Windows theme
+    # broadcast. The whole object has to go: every Var still holds a reference.
+    del dialog
 
     if params is None:
         print("[INFO] Setup cancelled.")
@@ -188,7 +194,7 @@ def main():
     # timestamps — shares one t=0.
     session_start = time.time()
     timestamp_str = datetime.fromtimestamp(session_start).strftime("%Y%m%d_%H%M%S")
-    save_root = params.get("save_root") or "SocialMemoryData"
+    save_root = params.get("save_root") or "SocialMemoryData" 
     BASE_SAVE_DIR = os.path.join(
         save_root,
         f"{animal}_{session_n}_{mode}_{species}_{timestamp_str}",
