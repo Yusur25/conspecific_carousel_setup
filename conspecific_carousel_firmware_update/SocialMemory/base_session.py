@@ -52,15 +52,6 @@ class BaseSMSession:
     # open via door_override does not count against it.
     DOOR_WAIT_TIMEOUT = 60.0
 
-    # Longest the background graceful/careful door close (close_door_safe) is
-    # allowed to keep polling for a confirmed "door closed" event before it
-    # gives up and stops touching the door register entirely. This close runs
-    # in a fire-and-forget daemon thread that the session does not wait on
-    # (see step 6 below), so without its own bound it would keep running —
-    # and keep issuing door commands — indefinitely if the event is dropped,
-    # contending with the next trial's door open.
-    DOOR_CLOSE_TIMEOUT = 15.0
-
     def __init__(
         self,
         ser,
@@ -303,12 +294,10 @@ class BaseSMSession:
 
         if pres_start is None:
             # Stopped before any beam contact — close door and return
-            closer = threading.Thread(
-                target=close_door_safe, args=(self.ser, self.shared),
-                kwargs={"timeout": self.DOOR_WAIT_TIMEOUT}, daemon=True,
-            )
-            closer.start()
-            closer.join()
+            threading.Thread(
+                target=close_door_safe, args=(self.ser, self.shared), daemon=True
+            ).start()
+            wait_for_door_state(self.shared, "door closed")
             wait_for_table_stopped(self.shared)
             return
 
@@ -339,23 +328,15 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
-        # 6. Close door safely (pauses if sensors active), in the background.
-        # The operator can still toggle self.door_override to force the door
-        # open on a mechanical failure/obstruction and then close it again.
-        # The session does NOT block on the door reaching "door closed" —
-        # closing continues gracefully on its own, but the next trial (CC,
-        # next presentation, etc.) is free to proceed immediately.
-        # DOOR_CLOSE_TIMEOUT bounds how long that background close keeps
-        # running: if "door closed" never arrives, it gives up and stops
-        # touching the door register instead of running (and potentially
-        # still issuing commands) into the next trial's door open. An
-        # override hold keeps the door's clock refreshed, so it can't expire
-        # out from under the operator.
+        # 6. Close door safely (pauses if sensors active). The operator can
+        # toggle self.door_override here to force the door open on a mechanical
+        # failure/obstruction and then close it again; the wait below keeps
+        # blocking until the door is closed, so the session resumes gracefully.
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared),
-            kwargs={"override": self.door_override,
-                    "timeout": self.DOOR_CLOSE_TIMEOUT}, daemon=True,
+            kwargs={"override": self.door_override}, daemon=True,
         ).start()
+        wait_for_door_state(self.shared, "door closed")
 
         # 7. Ensure table motor stopped before next presentation
         wait_for_table_stopped(self.shared)
@@ -388,7 +369,7 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
-        print(f"[INFO] {period}: table at home (door closing in background)")
+        print(f"[INFO] {period}: door closed, table at home")
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
