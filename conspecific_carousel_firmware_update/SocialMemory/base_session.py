@@ -374,11 +374,21 @@ class BaseSMSession:
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
         appending trials to self.conditioning_df. Requires self.cc_ports,
-        cc_led_on_time, cc_iti_min, cc_iti_max, cc_reward_prob, cc_delay."""
+        cc_led_on_time, cc_iti_min, cc_iti_max, cc_reward_prob, cc_delay.
+
+        If self.cc_ports is empty (all of portA/B/C unchecked in the GUI), no
+        conditioning trials are run — this just waits out the same ITI
+        duration as a plain, unfilled ITI."""
+        iti = random.uniform(iti_min, iti_max)
+
+        if not self.cc_ports:
+            print(f"\n[INFO] {period_label}: ITI = {iti:.1f} s (no CC ports selected)")
+            self._wait(iti)
+            return
+
         # Deferred import: training.py imports BaseSMSession from this module.
         from .training import ClassicalConditioningSession
 
-        iti = random.uniform(iti_min, iti_max)
         print(f"\n[INFO] {period_label}: CC ITI = {iti:.1f} s"
               + (f" (CC starts after {self.cc_delay:.1f} s delay)" if self.cc_delay > 0 else ""))
 
