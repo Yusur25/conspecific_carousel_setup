@@ -682,8 +682,8 @@ class SMSetupDialog:
 
         elif mode == "task":
             cc_ports = [p for p in ("A", "B", "C") if self._task_port_vars[p].get()]
-            if not cc_ports:
-                errors.append("Select at least one CC port for the task.")
+            # Empty is allowed: no CC ports means the ITI still runs (same
+            # duration), just with no classical conditioning during it.
 
             task = self._task_vars
             s1_id = task["s1_id"].get().strip()
@@ -767,8 +767,8 @@ class SMSetupDialog:
 
         else:  # passivetest
             cc_ports = [p for p in ("A", "B", "C") if self._passive_port_vars[p].get()]
-            if not cc_ports:
-                errors.append("Select at least one CC port for the passive test.")
+            # Empty is allowed: no CC ports means the ITI still runs (same
+            # duration), just with no classical conditioning during it.
 
             pv = self._passive_vars
             box_ids = [pv[f"box{i}_id"].get().strip() for i in range(4)]

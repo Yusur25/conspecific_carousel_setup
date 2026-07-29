@@ -294,12 +294,10 @@ class BaseSMSession:
 
         if pres_start is None:
             # Stopped before any beam contact — close door and return
-            closer = threading.Thread(
-                target=close_door_safe, args=(self.ser, self.shared),
-                kwargs={"timeout": self.DOOR_WAIT_TIMEOUT}, daemon=True,
-            )
-            closer.start()
-            closer.join()
+            threading.Thread(
+                target=close_door_safe, args=(self.ser, self.shared), daemon=True
+            ).start()
+            wait_for_door_state(self.shared, "door closed")
             wait_for_table_stopped(self.shared)
             return
 
@@ -330,16 +328,27 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
+<<<<<<< HEAD
         # 6. Close door safely (pauses if sensors active), in the background.
         # The operator can still toggle self.door_override to force the door
         # open on a mechanical failure/obstruction and then close it again.
         # The session does NOT block on the door reaching "door closed" —
         # closing continues gracefully on its own, but the next trial (CC,
         # next presentation, etc.) is free to proceed immediately.
+=======
+        # 6. Close door safely (pauses if sensors active). The operator can
+        # toggle self.door_override here to force the door open on a mechanical
+        # failure/obstruction and then close it again; the wait below keeps
+        # blocking until the door is closed, so the session resumes gracefully.
+>>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared),
             kwargs={"override": self.door_override}, daemon=True,
         ).start()
+<<<<<<< HEAD
+=======
+        wait_for_door_state(self.shared, "door closed")
+>>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
 
         # 7. Ensure table motor stopped before next presentation
         wait_for_table_stopped(self.shared)
@@ -372,16 +381,30 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
+<<<<<<< HEAD
         print(f"[INFO] {period}: table at home (door closing in background)")
+=======
+        print(f"[INFO] {period}: door closed, table at home")
+>>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
         appending trials to self.conditioning_df. Requires self.cc_ports,
-        cc_led_on_time, cc_iti_min, cc_iti_max, cc_reward_prob, cc_delay."""
+        cc_led_on_time, cc_iti_min, cc_iti_max, cc_reward_prob, cc_delay.
+
+        If self.cc_ports is empty (all of portA/B/C unchecked in the GUI), no
+        conditioning trials are run — this just waits out the same ITI
+        duration as a plain, unfilled ITI."""
+        iti = random.uniform(iti_min, iti_max)
+
+        if not self.cc_ports:
+            print(f"\n[INFO] {period_label}: ITI = {iti:.1f} s (no CC ports selected)")
+            self._wait(iti)
+            return
+
         # Deferred import: training.py imports BaseSMSession from this module.
         from .training import ClassicalConditioningSession
 
-        iti = random.uniform(iti_min, iti_max)
         print(f"\n[INFO] {period_label}: CC ITI = {iti:.1f} s"
               + (f" (CC starts after {self.cc_delay:.1f} s delay)" if self.cc_delay > 0 else ""))
 

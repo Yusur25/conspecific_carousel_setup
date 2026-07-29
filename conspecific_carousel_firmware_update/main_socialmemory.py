@@ -93,7 +93,11 @@ def _start_camera_recording(session_start: float, save_dir: str):
         proc = subprocess.Popen(
             [sys.executable, CAMERACONTROL_PATH,
              "--session-start", str(session_start),
-             "--save-dir", save_dir],
+             "--save-dir", save_dir,
+             # "reuse" loads the saved crop (or full frame if none saved yet)
+             # with no prompt — cameracontrol's interactive "ask" default would
+             # block forever here since stdin is a pipe we only write to on stop.
+             "--crop", "reuse"],
             stdin=subprocess.PIPE,
             creationflags=creationflags,
         )
