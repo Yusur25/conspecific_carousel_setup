@@ -330,7 +330,6 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
-<<<<<<< HEAD
         # 6. Close door safely (pauses if sensors active), in the background.
         # The operator can still toggle self.door_override to force the door
         # open on a mechanical failure/obstruction and then close it again.
@@ -341,26 +340,6 @@ class BaseSMSession:
             target=close_door_safe, args=(self.ser, self.shared),
             kwargs={"override": self.door_override}, daemon=True,
         ).start()
-=======
-        # 6. Close door safely (pauses if sensors active). The operator can
-        # toggle self.door_override here to force the door open on a mechanical
-        # failure/obstruction and then close it again; close_door_safe only
-        # returns once the door is closed, DOOR_WAIT_TIMEOUT elapses, or the
-        # session stops, so waiting on the thread itself (rather than on the
-        # "door closed" state) resumes gracefully after the operator finishes
-        # while still honoring the one timeout — an override hold keeps the
-        # door's clock refreshed, so it can't expire under the operator.
-        closer = threading.Thread(
-            target=close_door_safe, args=(self.ser, self.shared),
-            kwargs={"override": self.door_override,
-                    "timeout": self.DOOR_WAIT_TIMEOUT}, daemon=True,
-        )
-        closer.start()
-        closer.join()
-        door_closed = self.shared.get_port("door")[0] == "door closed"
-        if not door_closed:
-            print(f"[WARNING] {period}: door not confirmed closed — continuing anyway")
->>>>>>> 7ae874c (Added auto-reward option)
 
         # 7. Ensure table motor stopped before next presentation
         wait_for_table_stopped(self.shared)
@@ -393,13 +372,7 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
-<<<<<<< HEAD
         print(f"[INFO] {period}: table at home (door closing in background)")
-=======
-        print(f"[INFO] {period}: "
-              f"{'door closed' if door_closed else 'door NOT confirmed closed'}"
-              f", table at home")
->>>>>>> 7ae874c (Added auto-reward option)
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
