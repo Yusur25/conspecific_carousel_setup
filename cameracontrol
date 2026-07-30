@@ -58,10 +58,20 @@ DEFAULT_CROP_CONFIG  = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "camera_crop_config.json")
 # ──────────────────────────────────────────────────────────────────────────────
 
-def setup_user_output(camera):
-    camera.LineSelector.Value = OUTPUT_LINE
-    camera.LineSource.Value = OUTPUT_USER
-    camera.UserOutputSelector.Value = OUTPUT_USER
+def setup_user_output(camera) -> bool:
+    """Configure the digital output line used for the TTL sync pulse. Returns
+    True if the camera supports it, False if not (e.g. no digital I/O lines
+    on this model) — callers should then skip set_output() for the rest of
+    the session instead of throwing on every frame."""
+    try:
+        camera.LineSelector.Value = OUTPUT_LINE
+        camera.LineSource.Value = OUTPUT_USER
+        camera.UserOutputSelector.Value = OUTPUT_USER
+        return True
+    except Exception as e:
+        print(f"[WARN] Camera has no usable digital output line ({e}) — "
+              f"TTL sync pulse disabled for this recording.")
+        return False
 
 def set_output(camera, state: bool):
     camera.UserOutputValue.Value = state
@@ -326,9 +336,12 @@ def main():
     camera.Open()
     print(f"Camera: {camera.GetDeviceInfo().GetModelName()}")
 
-    # Configure UserOutput line
-    setup_user_output(camera)
-    set_output(camera, False)
+    # Configure UserOutput line (not all camera models expose a digital I/O
+    # line — output_available gates every later set_output() call so a camera
+    # without one just runs without a sync pulse instead of throwing).
+    output_available = setup_user_output(camera)
+    if output_available:
+        set_output(camera, False)
 
     converter, is_mono = configure_converter(camera)
     decide_crop(camera, converter, args)
@@ -359,7 +372,8 @@ def main():
     print(f"Recording started → {video_path}")
     print(f"Resolution: {width}x{height} @ {FRAME_RATE} fps ({'mono' if is_mono else 'color'})")
     print(f"H264 CRF {H264_CRF}, preset {FFMPEG_PRESET}")
-    print(f"TTL pulse every {PULSE_EVERY_N_FRAMES} frames.")
+    print(f"TTL pulse every {PULSE_EVERY_N_FRAMES} frames."
+          if output_available else "TTL pulse disabled (no digital output line on this camera).")
     if SHOW_PREVIEW:
         print("Live preview window open — press 'q' there (or ENTER here) to stop.")
 
@@ -382,8 +396,9 @@ def main():
                         frame_count += 1
                         frame_timestamps.append(time.time() - session_start)
 
-                        # TTL pulse every N frames
-                        if frame_count % PULSE_EVERY_N_FRAMES == 0:
+                        # TTL pulse every N frames (skipped if this camera has
+                        # no usable digital output line — see output_available)
+                        if output_available and frame_count % PULSE_EVERY_N_FRAMES == 0:
                             set_output(camera, True)
                             time.sleep(PULSE_WIDTH_S)
                             set_output(camera, False)
