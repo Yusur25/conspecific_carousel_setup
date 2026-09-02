@@ -14,6 +14,7 @@ import time
 import signal
 import os
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -78,6 +79,14 @@ def _save_metadata(save_dir, params):
     print(f"[INFO] Metadata saved: {path}")
 
 
+# How long to wait after launching cameracontrol before checking that it's
+# still alive. Catches fast-fail startup errors (ffmpeg missing, no camera
+# device found) that happen well before the first frame is grabbed — long
+# enough to clear pypylon/ffmpeg init, short enough not to stall session start
+# noticeably when the camera comes up fine.
+CAMERA_STARTUP_CHECK_S = 2.0
+
+
 def _start_camera_recording(session_start: float, save_dir: str,
                             camera: str = ""):
     """Launch cameracontrol as a background subprocess, sharing this session's
@@ -88,6 +97,12 @@ def _start_camera_recording(session_start: float, save_dir: str,
 
     `camera` is the serial number picked in the setup GUI; blank means "first
     camera found" (the only sensible choice with a single camera attached)."""
+    if shutil.which("ffmpeg") is None:
+        print("[WARN] Could not start camera recording: ffmpeg not found on PATH. "
+              "cameracontrol now encodes video through ffmpeg (see its module "
+              "docstring) — install it (e.g. `winget install ffmpeg`) and restart. "
+              "Continuing session without video.")
+        return None
     try:
         # On Windows, a child process shares the parent's console by default,
         # so Ctrl+C would hit cameracontrol directly too (bypassing its own
@@ -108,6 +123,18 @@ def _start_camera_recording(session_start: float, save_dir: str,
             stdin=subprocess.PIPE,
             creationflags=creationflags,
         )
+        # cameracontrol prints its own errors to the inherited console, but a
+        # Popen() call succeeding just means the process launched — it says
+        # nothing about whether cameracontrol itself then failed (e.g. no
+        # camera device found). Give it a moment and check it's still up
+        # before reporting success, so a fast-fail doesn't silently look like
+        # a running recording for the rest of the session.
+        time.sleep(CAMERA_STARTUP_CHECK_S)
+        if proc.poll() is not None:
+            print(f"[WARN] Camera process exited immediately (code {proc.returncode}) "
+                  f"— see console output above for the error. "
+                  f"Continuing session without video.")
+            return None
         print(f"[INFO] Camera recording started (PID {proc.pid}, "
               f"camera {camera or 'first found'}) → {save_dir}")
         return proc

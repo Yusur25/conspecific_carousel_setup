@@ -134,6 +134,69 @@ def _reconstruct_engage_and_bouts(presentations: pd.DataFrame, session_dir: str)
     return presentations
 
 
+def _reconstruct_sampling_time(presentations: pd.DataFrame, session_dir: str) -> pd.DataFrame:
+    """Recover sampling_time for presentations.csv files saved before that
+    column existed, from the raw sensor_events.csv log.
+
+    Mirrors BaseSession._run_presentation's live accumulation: the beam is
+    already triggered at the first table contact after door-open (that's what
+    starts the presentation timer), so sampling_time is the total time the
+    table sensor spends "triggered" within
+    [first contact, first contact + presentation_duration], summed across
+    every triggered→cleared bout (a bout still open at the window end is
+    capped there, same as the live loop hitting its deadline).
+
+    Like _reconstruct_engage_and_bouts, this works entirely in
+    sensor_events.csv's own elapsed-time clock and pairs door-open segments
+    with presentation rows positionally — presentations.csv's own timestamp
+    columns (door_open_time, presentation_start, ...) are never compared
+    against sensor_events.csv's, since older files logged those as raw
+    time.time() values rather than session-relative ones and the two clocks
+    aren't guaranteed to line up.
+    """
+    events = _read_sensor_events(session_dir)
+    if events is None:
+        print("[WARN] sensor_events.csv not found — sampling_time left blank")
+        return _fill_missing_columns(presentations, ["sampling_time"])
+
+    segments = _door_open_segments(events)
+    table = events[events["port"] == "table"].sort_values("t")
+    table_triggers = table[table["state"] == "triggered"]
+
+    n = min(len(segments), len(presentations))
+    if len(segments) != len(presentations):
+        print(f"[WARN] {len(segments)} door-open segments in sensor_events.csv vs "
+              f"{len(presentations)} presentation rows — reconstructing the first {n}")
+
+    sampling = [float("nan")] * len(presentations)
+    for i in range(n):
+        door_open_t, door_close_t = segments[i]
+        duration = presentations.iloc[i]["presentation_duration"]
+        in_window = table_triggers[(table_triggers["t"] >= door_open_t) &
+                                    (table_triggers["t"] <= door_close_t)]
+        if in_window.empty:
+            continue
+        first_contact_t = in_window["t"].min()
+        window_end = first_contact_t + duration
+
+        contact_time = 0.0
+        contact_start = first_contact_t  # beam is already triggered at first contact
+        bout_events = table[(table["t"] > first_contact_t) & (table["t"] <= window_end)]
+        for _, ev in bout_events.iterrows():
+            if ev["state"] == "cleared" and contact_start is not None:
+                contact_time += ev["t"] - contact_start
+                contact_start = None
+            elif ev["state"] == "triggered" and contact_start is None:
+                contact_start = ev["t"]
+        if contact_start is not None:
+            contact_time += window_end - contact_start
+        sampling[i] = contact_time
+
+    presentations = presentations.copy()
+    presentations["sampling_time"] = sampling
+    return presentations
+
+
 # ── Per-family replay ───────────────────────────────────────────────────────────
 
 def _replay_socialmemory(meta: dict, session_dir: str):
@@ -155,6 +218,8 @@ def _replay_socialmemory(meta: dict, session_dir: str):
         presentations = _read_csv(session_dir, "presentations.csv")
         if "time_to_engage" not in presentations.columns or "bout_count" not in presentations.columns:
             presentations = _reconstruct_engage_and_bouts(presentations, session_dir)
+        if "sampling_time" not in presentations.columns:
+            presentations = _reconstruct_sampling_time(presentations, session_dir)
         conditioning = _read_csv(session_dir, "conditioning_trials.csv")
         perf_gui.update(presentations, conditioning)
     else:
