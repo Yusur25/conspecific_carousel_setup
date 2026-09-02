@@ -256,16 +256,19 @@ class BaseSMSession:
                            extra_fields: dict = None) -> None:
         """Present a stimulus at `angle` for `duration` seconds, logging a row to
         self.presentations_df. Ends by turning the stimulus away (45° CCW), closing
-        the door safely, then returning the table to home (0°) for the ITI — turning
-        the opposite direction from the outbound trip — before the next presentation
-        turns from home into position before its door opens."""
+        the door safely, then returning home (0°) — the ITI begins as soon as the
+        door is closed, not once the table is confirmed stopped; the home turn
+        runs in the background and finishes well within the ITI, before the next
+        presentation turns from home into position before its door opens."""
         self._presentation_counter += 1
         print(f"\n--- {period} (#{self._presentation_counter}): "
               f"{angle}° for {duration} s ---")
 
-        # 1. Turntable to stimulus angle
+        # 1. Turntable to stimulus angle. Short timeout: if the 'table stopped'
+        # event is dropped, don't stall the door opening for the full 30 s
+        # default — the move itself is quick, so 3 s is ample margin.
         arrival_direction = self._turn_to(angle)
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, timeout=3.0)
 
         # 2. Open door (async); wait for fully open
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
@@ -298,7 +301,7 @@ class BaseSMSession:
                 target=close_door_safe, args=(self.ser, self.shared), daemon=True
             ).start()
             wait_for_door_state(self.shared, "door closed")
-            wait_for_table_stopped(self.shared)
+            wait_for_table_stopped(self.shared, timeout=15.0)
             return
 
         # 4. Run for presentation duration; track actual contact time
@@ -323,10 +326,8 @@ class BaseSMSession:
         pres_end = time.time()
         print(f"[INFO] {period}: complete — sampling_time={contact_time:.3f} s")
 
-        # 5. Remove stimulus: 45° CCW (async)
-        threading.Thread(
-            target=self._turn_ccw_partial, args=(45,), daemon=True
-        ).start()
+        # 5. Remove stimulus: 45° CCW (fire-and-forget register write)
+        self._turn_ccw_partial(45)
 
         # 6. Close door safely (pauses if sensors active). The operator can
         # toggle self.door_override here to force the door open on a mechanical
@@ -338,17 +339,19 @@ class BaseSMSession:
         ).start()
         wait_for_door_state(self.shared, "door closed")
 
-        # 7. Ensure table motor stopped before next presentation
-        wait_for_table_stopped(self.shared)
+        # 7. The ITI starts as soon as the door is closed — do not block the
+        # trial on a 'table stopped' confirmation, which can lag or never
+        # arrive. Return home (0°) in the background instead: settle briefly
+        # (no residual momentum/backlash from the 45° retraction bleeding
+        # into the home turn), then turn home the opposite direction from
+        # the outbound trip. The ITI that follows gives this small move
+        # ample time to finish before the next presentation issues its own
+        # turn command.
+        def _return_home():
+            time.sleep(self.TABLE_SETTLE_DELAY)
+            self._turn_home_opposite(arrival_direction)
 
-        # 8. Let the motor fully settle before the next move (no residual
-        # momentum/backlash carrying into the home turn), then return home
-        # (0°) for the ITI, turning the opposite direction from the outbound
-        # trip. The next presentation turns from home into position before
-        # its door opens (see step 1).
-        time.sleep(self.TABLE_SETTLE_DELAY)
-        self._turn_home_opposite(arrival_direction)
-        wait_for_table_stopped(self.shared)
+        threading.Thread(target=_return_home, daemon=True).start()
 
         # Log — timestamps relative to session_start (s), matching
         # sensor_events.csv / camera_sync.csv / frame_timestamps.csv so every
@@ -369,7 +372,7 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
-        print(f"[INFO] {period}: door closed, table at home")
+        print(f"[INFO] {period}: door closed, table returning home in background")
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],
