@@ -12,6 +12,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from utils import parse_motor_speed
 from gui_utils import make_scrollable, fit_window_to_screen
+from camera_select import CameraChooser
 
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialmemory_last_settings.json")
@@ -115,7 +116,8 @@ class SMSetupDialog:
             "species": self._species_var.get(),
             "mode":    self._mode_var.get(),
             "auto_reward": self._auto_reward_var.get(),
-            "record_camera": self._camera_var.get(),
+            "record_camera": self._camera.record,
+            "camera_serial": self._camera.serial,
         }
         for k, v in self._vars.items():
             s[k] = v.get()
@@ -154,7 +156,9 @@ class SMSetupDialog:
         if "auto_reward" in s:
             self._auto_reward_var.set(s["auto_reward"])
         if "record_camera" in s:
-            self._camera_var.set(s["record_camera"])
+            self._camera.record = s["record_camera"]
+        if "camera_serial" in s:
+            self._camera.serial = s["camera_serial"]
         for k, v in self._vars.items():
             if k in s:
                 v.set(s[k])
@@ -273,14 +277,13 @@ class SMSetupDialog:
                  font=("Arial", 8), fg="gray").grid(
             row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
 
-        # Camera recording (optional, applies to all modes)
-        self._camera_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(speed_frame, text="Record camera",
-                       variable=self._camera_var).grid(
-            row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 0))
-
-        ttk.Separator(root, orient="horizontal").grid(
-            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        # ── Camera (optional, applies to all modes) ───────────────────────────
+        # The camera is chosen by serial number so a second session running in
+        # another terminal can record the other camera at the same time.
+        cam_frame = tk.LabelFrame(root, text="Camera", padx=8, pady=6)
+        cam_frame.grid(row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        self._camera = CameraChooser(cam_frame)
+        self._camera.grid(row=0, column=0, sticky="w")
 
         # ── Training frame ────────────────────────────────────────────────────
         self._training_frame = tk.LabelFrame(
@@ -846,7 +849,8 @@ class SMSetupDialog:
                 "notes":           self._notes.get("1.0", "end").strip(),
             }
 
-        self.result["record_camera"] = self._camera_var.get()
+        self.result["record_camera"] = self._camera.record
+        self.result["camera_serial"] = self._camera.serial
 
         self._save_settings()
         self.root.destroy()

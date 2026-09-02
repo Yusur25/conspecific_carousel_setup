@@ -21,6 +21,7 @@ import pandas as pd
 from hardware import SharedSensorState, STOP_EVENT
 from .task_base import TaskBase2AFC
 
+BLOCK_SIZE      = 20     # trials per block (ratio arithmetic assumes this)
 ADVANCE_RATIOS  = [0.75, 0.50, 0.25, 0.00]
 ADVANCE_CRIT    = 0.75   # free-trial hit rate threshold to advance ratio
 MIN_FREE_TRIALS = 3      # minimum free trials in a block before evaluating
@@ -43,11 +44,11 @@ class MixedChoiceSession(TaskBase2AFC):
         start_forced_ratio: float = 0.75,
         session_duration: float = None,
     ):
-        # block_size fixed at 20 for mixed (needed for ratio arithmetic)
+        # block_size fixed at BLOCK_SIZE for mixed (needed for ratio arithmetic)
         super().__init__(
             ser, shared, species, valve_time,
             sensory_minimum, decision_window,
-            angle_a, angle_b, block_size=20,
+            angle_a, angle_b, block_size=BLOCK_SIZE,
             session_duration=session_duration,
         )
         self.forced_ratio = start_forced_ratio
@@ -119,9 +120,15 @@ class MixedChoiceSession(TaskBase2AFC):
               f"({n_forced} forced / {n_free} free)")
 
     def _evaluate_block(self):
-        """Check free-trial performance; advance ratio if criterion met."""
+        """Check free-trial performance; advance ratio if criterion met.
+
+        'door_failed' trials are excluded from both numerator and denominator:
+        the animal never got to choose, so counting them would penalise it for
+        a hardware fault.
+        """
         free_outcomes = [
-            r["outcome"] for r in self._block_results if r["trial_type"] == "free"
+            r["outcome"] for r in self._block_results
+            if r["trial_type"] == "free" and r["outcome"] != "door_failed"
         ]
         if len(free_outcomes) < MIN_FREE_TRIALS:
             return
@@ -160,7 +167,7 @@ class MixedChoiceSession(TaskBase2AFC):
         })
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":               self.trial_counter,
             "block_num":               self._block_num,
             "trial_type":              trial_type,
@@ -185,6 +192,8 @@ class MixedChoiceSession(TaskBase2AFC):
             "trial_end":               data["trial_end"],
             "free_hit_rate_prev_block":self._free_hit_rate_prev,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)
         print("Trial complete")

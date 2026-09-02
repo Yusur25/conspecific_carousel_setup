@@ -2,10 +2,11 @@
 import json
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 from utils import parse_motor_speed
 from gui_utils import make_scrollable, fit_window_to_screen
+from camera_select import CameraChooser
 
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "socialreward2afc_last_settings.json")
@@ -82,7 +83,9 @@ class SetupDialog2AFC:
     # ── Settings persistence ──────────────────────────────────────────────────
 
     def _save_settings(self):
-        s = {"species": self._species_var.get()}
+        s = {"species": self._species_var.get(),
+             "record_camera": self._camera.record,
+             "camera_serial": self._camera.serial}
         for k, v in self._vars.items():
             s[k] = v.get()
         for k, v in self._timing_vars.items():
@@ -109,6 +112,10 @@ class SetupDialog2AFC:
         if "phase" in s:
             self._vars["phase"].set(s["phase"])
             self._on_phase_change()
+        if "record_camera" in s:
+            self._camera.record = s["record_camera"]
+        if "camera_serial" in s:
+            self._camera.serial = s["camera_serial"]
         for k, v in self._vars.items():
             if k in s:
                 v.set(s[k])
@@ -166,23 +173,35 @@ class SetupDialog2AFC:
             self._vars[key] = v
             self._row(root, label, v, row=3 + i)
 
+        # Save folder (with browse button) — session data (CSVs, metadata,
+        # camera recording) is saved under <save_root>/<animal>_..._<date>_<species>/
+        default_save_root = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "SocialReward2AFCData")
+        self._vars["save_root"] = tk.StringVar(value=default_save_root)
+        tk.Label(root, text="Save Folder:", anchor="w").grid(
+            row=7, column=0, sticky="w", **pad)
+        tk.Entry(root, textvariable=self._vars["save_root"], width=20).grid(
+            row=7, column=1, sticky="w", **pad)
+        tk.Button(root, text="Browse...", command=self._browse_save_root).grid(
+            row=7, column=2, sticky="w", **pad)
+
         # Phase
         tk.Label(root, text="Phase:", anchor="w").grid(
-            row=7, column=0, sticky="w", **pad)
+            row=8, column=0, sticky="w", **pad)
         self._vars["phase"] = tk.StringVar(value="1")
         phase_cb = ttk.Combobox(
             root, textvariable=self._vars["phase"],
             values=["1", "2", "3", "3b", "4", "forced", "mixed", "free"],
             state="readonly", width=12)
-        phase_cb.grid(row=7, column=1, sticky="w", **pad)
+        phase_cb.grid(row=8, column=1, sticky="w", **pad)
         phase_cb.bind("<<ComboboxSelected>>", lambda _e: self._on_phase_change())
 
         ttk.Separator(root, orient="horizontal").grid(
-            row=8, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         # Timing (always visible)
         tf = tk.LabelFrame(root, text="Timing", padx=8, pady=4)
-        tf.grid(row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        tf.grid(row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
 
         for key in ("valve_time", "iti_min", "iti_max",
                     "session_duration_s", "session_duration_t"):
@@ -219,14 +238,14 @@ class SetupDialog2AFC:
         # Phase-specific frames (overlapping in same grid row)
         # Phase 2 / 3a — sensory minimum
         self._sm_frame = tk.LabelFrame(root, text="Phase Parameters", padx=8, pady=4)
-        self._sm_frame.grid(row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        self._sm_frame.grid(row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         self._timing_vars["sensory_minimum"] = tk.StringVar()
         self._row(self._sm_frame, "Sensory minimum (s):",
                   self._timing_vars["sensory_minimum"], row=0)
 
         # Phase 4
         self._p4_frame = tk.LabelFrame(root, text="Phase Parameters", padx=8, pady=4)
-        self._p4_frame.grid(row=10, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        self._p4_frame.grid(row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         self._timing_vars["phase4_sensory_min"]  = tk.StringVar()
         self._timing_vars["phase4_decision_win"] = tk.StringVar()
         self._row(self._p4_frame, "Sensory minimum (s):",
@@ -237,7 +256,7 @@ class SetupDialog2AFC:
         # Phase 3b
         self._p3b_frame = tk.LabelFrame(
             root, text="Phase 3b — Gradual Sensory Min", padx=8, pady=4)
-        self._p3b_frame.grid(row=10, column=0, columnspan=4,
+        self._p3b_frame.grid(row=11, column=0, columnspan=4,
                              sticky="ew", padx=8, pady=4)
         tk.Label(self._p3b_frame, text="Trial threshold (<)").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=4)
@@ -262,7 +281,7 @@ class SetupDialog2AFC:
 
         # Task phases (forced / mixed / free)
         self._task_frame = tk.LabelFrame(root, text="Task Parameters", padx=8, pady=4)
-        self._task_frame.grid(row=10, column=0, columnspan=4,
+        self._task_frame.grid(row=11, column=0, columnspan=4,
                               sticky="ew", padx=8, pady=4)
         for key in ("task_sensory_min", "task_decision_win",
                     "angle_a", "angle_b", "mixed_start_ratio"):
@@ -280,16 +299,23 @@ class SetupDialog2AFC:
                  font=("Arial", 8), fg="gray").grid(
             row=5, column=0, columnspan=4, sticky="w", padx=8)
 
+        # Camera — chosen by serial number so a second session running in
+        # another terminal can record the other camera at the same time.
+        cam_frame = tk.LabelFrame(root, text="Camera", padx=8, pady=4)
+        cam_frame.grid(row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        self._camera = CameraChooser(cam_frame)
+        self._camera.grid(row=0, column=0, sticky="w")
+
         # Notes + buttons
         ttk.Separator(root, orient="horizontal").grid(
-            row=11, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            row=13, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
         tk.Label(root, text="Notes:", anchor="w").grid(
-            row=12, column=0, sticky="nw", **pad)
+            row=14, column=0, sticky="nw", **pad)
         self._notes = tk.Text(root, width=38, height=3, font=("Arial", 9))
-        self._notes.grid(row=12, column=1, columnspan=3, sticky="ew", **pad)
+        self._notes.grid(row=14, column=1, columnspan=3, sticky="ew", **pad)
 
         bf = tk.Frame(root)
-        bf.grid(row=13, column=0, columnspan=4, pady=(8, 14))
+        bf.grid(row=15, column=0, columnspan=4, pady=(8, 14))
         tk.Button(bf, text="Start Session", bg="#4CAF50", fg="white",
                   font=("Arial", 11, "bold"), width=18,
                   command=self._on_start).pack(side="left", padx=8)
@@ -319,6 +345,14 @@ class SetupDialog2AFC:
             self._p3b_hold_vars[i].set(
                 str(holds[i]) if i < len(holds) else "")
 
+    def _browse_save_root(self):
+        chosen = filedialog.askdirectory(
+            initialdir=self._vars["save_root"].get() or os.getcwd(),
+            title="Choose folder to save session data into",
+        )
+        if chosen:
+            self._vars["save_root"].set(chosen)
+
     def _on_phase_change(self):
         phase = self._vars["phase"].get()
         for frame in (self._sm_frame, self._p4_frame,
@@ -345,6 +379,10 @@ class SetupDialog2AFC:
         port      = self._vars["port"].get().strip()
         if not port:
             errors.append("Serial port is required.")
+
+        save_root = self._vars["save_root"].get().strip()
+        if not save_root:
+            errors.append("Save folder is required.")
 
         try:
             baud = int(self._vars["baud"].get())
@@ -390,7 +428,7 @@ class SetupDialog2AFC:
         sensory_minimum = phase4_sensory_min = phase4_decision_win = None
         task_sensory_min = task_decision_win = None
         angle_a = angle_b = mixed_start_ratio = None
-        thresholds = holds = []
+        thresholds, holds = [], []
 
         if phase in ("2", "3"):
             try:
@@ -445,6 +483,7 @@ class SetupDialog2AFC:
             "animal":            animal,
             "session_n":         session_n,
             "phase":             phase,
+            "save_root":         save_root,
             "port":              port,
             "baud":              baud,
             "valve_time":        valve_time,
@@ -465,6 +504,8 @@ class SetupDialog2AFC:
             "mixed_start_ratio": mixed_start_ratio,
             "phase3b_thresholds":thresholds,
             "phase3b_holds":     holds,
+            "record_camera":     self._camera.record,
+            "camera_serial":     self._camera.serial,
             "notes":             self._notes.get("1.0", "end").strip(),
         }
         self._save_settings()

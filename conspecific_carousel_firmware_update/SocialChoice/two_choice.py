@@ -181,7 +181,7 @@ class TwoChoiceSession(BaseSCSession):
 
             print(f"Rotating to social angle {self.social_angle}°")
             self._turn_to(self.social_angle)
-            wait_for_table_stopped(self.shared)
+            wait_for_table_stopped(self.shared, device=self.ser)
             print(f"Social stimulus visible — {self.social_duration:.1f} s timer started")
 
             social_start = time.time()
@@ -203,13 +203,13 @@ class TwoChoiceSession(BaseSCSession):
             # Rotate back to default position
             print("Rotating back to 0°")
             self._turn_to(0)
-            wait_for_table_stopped(self.shared)
+            wait_for_table_stopped(self.shared, device=self.ser)
             print("Table returned to default")
 
         self._update_anti_bias(poked_port)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":        self.trial_counter,
             "active_ports":     str(active_ports),
             "poked_port":       poked_port,
@@ -226,5 +226,7 @@ class TwoChoiceSession(BaseSCSession):
             "reward_count":     self.reward_count,
             "valve_time":       valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)

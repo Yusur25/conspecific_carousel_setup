@@ -25,6 +25,8 @@ from hardware import (
     wait_for_table_clear,
     SharedSensorState,
     STOP_EVENT,
+    DOOR_OPEN_TIMEOUT,
+    DOOR_CLOSE_TIMEOUT,
 )
 from .base_session import Base2AFCSession
 
@@ -82,9 +84,13 @@ class Phase2Session2AFC(Base2AFCSession):
 
         # 1. Open door automatically
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, "door opened", timeout=None)
+        door_opened = wait_for_door_state(self.shared, "door opened",
+                                          timeout=DOOR_OPEN_TIMEOUT, device=self.ser)
         door_open_time = time.time()
-        print("Door opened")
+        if door_opened:
+            print("Door opened")
+        elif self.running and not STOP_EVENT.is_set():
+            print("[ERROR] Door never confirmed open — scoring this trial as door_failed")
 
         # 2. Sensory minimum (200 s timeout)
         print(f"Waiting for sensory minimum ({self.sensory_minimum:.3f} s)...")
@@ -92,7 +98,7 @@ class Phase2Session2AFC(Base2AFCSession):
         first_contact_time = None
         deadline           = door_open_time + TABLE_SENSOR_TIMEOUT
 
-        while self.running and not STOP_EVENT.is_set():
+        while door_opened and self.running and not STOP_EVENT.is_set():
             if time.time() >= deadline:
                 print(f"Sensory minimum not met within {TABLE_SENSOR_TIMEOUT} s")
                 break
@@ -122,11 +128,14 @@ class Phase2Session2AFC(Base2AFCSession):
             threading.Thread(
                 target=close_door_safe, args=(self.ser, self.shared), daemon=True
             ).start()
-            wait_for_door_state(self.shared, "door closed")
+            wait_for_door_state(self.shared, "door closed",
+                                timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
             self._log(np.nan, None, False, np.nan, rt_tablehold, rt_to_first_table,
-                      sampling_time, total_sampling_time, iti, "missed", np.nan)
+                      sampling_time, total_sampling_time, iti,
+                      "missed" if door_opened else "door_failed", np.nan)
             self._run_iti(iti)
-            print("Trial complete (missed)")
+            print("Trial complete (missed)" if door_opened
+                  else "Trial complete (door failed)")
             return
 
         # 3. Wait for table clear
@@ -141,11 +150,7 @@ class Phase2Session2AFC(Base2AFCSession):
         print(f"Ports {active_ports} lit (forced={was_forced})")
 
         # Ensure ports cleared before recording poke
-        for p in ["A", "B"]:
-            while self.running and not STOP_EVENT.is_set():
-                if self.shared.get_port(p)[0] == "cleared":
-                    break
-                time.sleep(0.005)
+        self._wait_for_ports_cleared(["A", "B"])
 
         trial_start = time.time()
 
@@ -176,7 +181,8 @@ class Phase2Session2AFC(Base2AFCSession):
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
-        wait_for_door_state(self.shared, "door closed")
+        wait_for_door_state(self.shared, "door closed",
+                            timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
 
         self._log(trial_start, poked_port, rewarded, rt, rt_tablehold,
                   rt_to_first_table, sampling_time, total_sampling_time,
@@ -187,7 +193,7 @@ class Phase2Session2AFC(Base2AFCSession):
     def _log(self, trial_start, poked_port, rewarded, rt, rt_tablehold,
              rt_to_first_table, sampling_time, total_sampling_time,
              iti, outcome, valve_time_used):
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":           self.trial_counter,
             "active_ports":        str(self._get_active_reward_ports()),
             "poked_port":          poked_port,
@@ -205,4 +211,6 @@ class Phase2Session2AFC(Base2AFCSession):
             "reward_count":        self.reward_count,
             "valve_time":          valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())

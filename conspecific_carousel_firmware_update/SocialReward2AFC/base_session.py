@@ -14,6 +14,9 @@
 import random
 import threading
 import time
+import traceback
+
+import pandas as pd
 
 from hardware import (
     deliver_reward,
@@ -22,6 +25,7 @@ from hardware import (
     shutdown_outputs,
     SharedSensorState,
     STOP_EVENT,
+    WaitHeartbeat,
 )
 
 
@@ -54,6 +58,10 @@ class Base2AFCSession:
         # Anti-camping state (phases 1–4)
         self._poke_history = []   # last 3 reward-port choices (A or B)
         self._forced_port = None  # None = both active; "A"/"B" = camping correction
+
+        # Guards reads/writes of results dataframes shared between the
+        # session thread (appends rows) and the main thread (polls for the GUI).
+        self._df_lock = threading.Lock()
 
     # ── Session control ───────────────────────────────────────────────────────
 
@@ -91,6 +99,14 @@ class Base2AFCSession:
                     shutdown_outputs(self.ser)
                 except TimeoutError:
                     print("[ERROR] Device unresponsive — could not confirm outputs off")
+            except Exception:
+                # Any other exception would otherwise kill this thread while
+                # self.running stayed True, leaving the main GUI loop spinning
+                # against a session that has silently stopped running trials.
+                # End the session loudly instead.
+                print(f"[ERROR] Trial {self.trial_counter} crashed — ending session")
+                traceback.print_exc()
+                break
             if self.max_trials is not None and self.trial_counter >= self.max_trials:
                 print(f"[INFO] Trial limit ({self.max_trials}) reached")
                 break
@@ -100,6 +116,12 @@ class Base2AFCSession:
 
     def _run_trial(self):
         raise NotImplementedError
+
+    def snapshot(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Thread-safe copy of a results dataframe, for reading from the main thread
+        while the session thread may be appending rows to it."""
+        with self._df_lock:
+            return df.copy()
 
     # ── Reward delivery ───────────────────────────────────────────────────────
 
@@ -148,6 +170,7 @@ class Base2AFCSession:
 
     def _wait_for_poke(self, port: str, deadline: float = None) -> bool:
         """Block until port triggered+held. Returns True on poke, False on stop/deadline."""
+        heartbeat = WaitHeartbeat(f"poke at port {port}")
         while True:
             if not self.running or STOP_EVENT.is_set():
                 return False
@@ -156,11 +179,13 @@ class Base2AFCSession:
             state, _ = self.shared.get_port(port)
             if state == "triggered" and sensor_held(self.shared, port):
                 return True
+            heartbeat.tick()
             time.sleep(0.001)
 
     def _wait_for_any_poke(self, ports, deadline: float = None):
         """Block until any listed port is triggered+held.
         Returns port name, or None on stop/deadline."""
+        heartbeat = WaitHeartbeat(f"poke at port(s) {'/'.join(ports)}")
         while True:
             if not self.running or STOP_EVENT.is_set():
                 return None
@@ -170,11 +195,13 @@ class Base2AFCSession:
                 state, _ = self.shared.get_port(port)
                 if state == "triggered" and sensor_held(self.shared, port):
                     return port
+            heartbeat.tick()
             time.sleep(0.001)
 
     def _wait_for_table_contact(self, deadline: float = None):
         """Wait for table sensor trigger; measure hold.
         Returns (seconds_held, contact_start), or (None, None) if stopped or deadline exceeded."""
+        heartbeat = WaitHeartbeat("table sensor contact")
         while self.running and not STOP_EVENT.is_set():
             if deadline is not None and time.time() >= deadline:
                 return None, None
@@ -186,8 +213,24 @@ class Base2AFCSession:
                         break
                     time.sleep(0.001)
                 return time.time() - start, start
+            heartbeat.tick()
             time.sleep(0.001)
         return None, None
+
+    def _wait_for_ports_cleared(self, ports) -> bool:
+        """Block until every listed port reads 'cleared'.
+
+        A port left reading 'triggered' — a dropped clear event, or an animal
+        parked in the port — would otherwise hang the trial here silently.
+        Returns False on stop.
+        """
+        heartbeat = WaitHeartbeat(f"port(s) {'/'.join(ports)} to clear")
+        while self.running and not STOP_EVENT.is_set():
+            if all(self.shared.get_port(p)[0] == "cleared" for p in ports):
+                return True
+            heartbeat.tick()
+            time.sleep(0.005)
+        return False
 
     def _wait(self, duration: float) -> None:
         start = time.time()

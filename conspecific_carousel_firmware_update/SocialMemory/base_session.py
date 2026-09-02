@@ -14,6 +14,7 @@
 import random
 import threading
 import time
+import traceback
 
 import pandas as pd
 
@@ -90,6 +91,11 @@ class BaseSMSession:
         # None (the default) leaves door closing fully automatic.
         self.door_override = None
 
+        # Set by close_door_safe while the override is holding the door open,
+        # so the wait for 'door closed' pauses its timeout instead of giving up
+        # on the operator mid-repair (see _run_presentation step 6).
+        self._door_held_open = threading.Event()
+
         # Guards reads/writes of results dataframes shared between the
         # session thread (appends rows) and the main thread (polls for the GUI).
         self._df_lock = threading.Lock()
@@ -137,6 +143,14 @@ class BaseSMSession:
                     shutdown_outputs(self.ser)
                 except TimeoutError:
                     print("[ERROR] Device unresponsive — could not confirm outputs off")
+            except Exception:
+                # Any other exception would otherwise kill this thread while
+                # self.running stayed True, leaving the main GUI loop spinning
+                # against a session that has silently stopped running trials.
+                # End the session loudly instead.
+                print(f"[ERROR] Trial {self.trial_counter} crashed — ending session")
+                traceback.print_exc()
+                break
             if self.max_trials is not None and self.trial_counter >= self.max_trials:
                 print(f"[INFO] Trial limit ({self.max_trials}) reached")
                 break
@@ -265,12 +279,13 @@ class BaseSMSession:
 
         # 1. Turntable to stimulus angle
         arrival_direction = self._turn_to(angle)
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # 2. Open door (async); wait for fully open
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
         door_opened = wait_for_door_state(self.shared, "door opened",
-                                           timeout=self.DOOR_WAIT_TIMEOUT)
+                                          timeout=self.DOOR_WAIT_TIMEOUT,
+                                          device=self.ser)
         door_open_time = time.time()
         if door_opened:
             print(f"[INFO] {period}: door opened")
@@ -295,10 +310,12 @@ class BaseSMSession:
         if pres_start is None:
             # Stopped before any beam contact — close door and return
             threading.Thread(
-                target=close_door_safe, args=(self.ser, self.shared), daemon=True
+                target=close_door_safe, args=(self.ser, self.shared),
+                kwargs={"timeout": self.DOOR_WAIT_TIMEOUT}, daemon=True,
             ).start()
-            wait_for_door_state(self.shared, "door closed")
-            wait_for_table_stopped(self.shared)
+            wait_for_door_state(self.shared, "door closed",
+                                timeout=self.DOOR_WAIT_TIMEOUT, device=self.ser)
+            wait_for_table_stopped(self.shared, device=self.ser)
             return
 
         # 4. Run for presentation duration; track actual contact time
@@ -328,30 +345,30 @@ class BaseSMSession:
             target=self._turn_ccw_partial, args=(45,), daemon=True
         ).start()
 
-<<<<<<< HEAD
-        # 6. Close door safely (pauses if sensors active), in the background.
-        # The operator can still toggle self.door_override to force the door
-        # open on a mechanical failure/obstruction and then close it again.
-        # The session does NOT block on the door reaching "door closed" —
-        # closing continues gracefully on its own, but the next trial (CC,
-        # next presentation, etc.) is free to proceed immediately.
-=======
         # 6. Close door safely (pauses if sensors active). The operator can
         # toggle self.door_override here to force the door open on a mechanical
-        # failure/obstruction and then close it again; the wait below keeps
-        # blocking until the door is closed, so the session resumes gracefully.
->>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
+        # failure/obstruction and then close it again; the wait below pauses its
+        # timeout for as long as the door is held open, so the session resumes
+        # gracefully however long the repair takes.
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared),
-            kwargs={"override": self.door_override}, daemon=True,
+            kwargs={"override": self.door_override,
+                    "held_open": self._door_held_open,
+                    "timeout": self.DOOR_WAIT_TIMEOUT}, daemon=True,
         ).start()
-<<<<<<< HEAD
-=======
-        wait_for_door_state(self.shared, "door closed")
->>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
+        door_closed = wait_for_door_state(
+            self.shared, "door closed", timeout=self.DOOR_WAIT_TIMEOUT,
+            device=self.ser, pause_event=self._door_held_open)
+        if not door_closed and self.running and not STOP_EVENT.is_set():
+            # Warn and carry on rather than parking the session here forever: the
+            # presentation is over either way, and the next one has to move the
+            # turntable regardless. Check the door if you see this repeatedly.
+            print(f"[WARNING] {period}: door not confirmed closed within "
+                  f"{self.DOOR_WAIT_TIMEOUT:.0f} s — continuing anyway; the "
+                  f"turntable is about to move")
 
         # 7. Ensure table motor stopped before next presentation
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # 8. Let the motor fully settle before the next move (no residual
         # momentum/backlash carrying into the home turn), then return home
@@ -360,7 +377,7 @@ class BaseSMSession:
         # its door opens (see step 1).
         time.sleep(self.TABLE_SETTLE_DELAY)
         self._turn_home_opposite(arrival_direction)
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # Log — timestamps relative to session_start (s), matching
         # sensor_events.csv / camera_sync.csv / frame_timestamps.csv so every
@@ -381,11 +398,9 @@ class BaseSMSession:
             row.update(extra_fields)
         with self._df_lock:
             self.presentations_df.loc[len(self.presentations_df)] = row
-<<<<<<< HEAD
-        print(f"[INFO] {period}: table at home (door closing in background)")
-=======
-        print(f"[INFO] {period}: door closed, table at home")
->>>>>>> ee19e3a7e9433777133ec48b40b0e135e9138e1b
+        print(f"[INFO] {period}: "
+              f"{'door closed' if door_closed else 'door NOT confirmed closed'}"
+              f", table at home")
 
     def _run_cc_iti(self, iti_min: float, iti_max: float, period_label: str) -> None:
         """Run classical conditioning for a random duration in [iti_min, iti_max],

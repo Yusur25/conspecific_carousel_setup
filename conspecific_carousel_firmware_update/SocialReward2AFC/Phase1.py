@@ -89,7 +89,7 @@ class Phase1Session2AFC(Base2AFCSession):
         self._update_anti_camping(poked_port)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":       self.trial_counter,
             "active_ports":    str(active_ports),
             "poked_port":      poked_port,
@@ -102,5 +102,7 @@ class Phase1Session2AFC(Base2AFCSession):
             "reward_count":    self.reward_count,
             "valve_time":      valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)

@@ -37,6 +37,8 @@ from hardware import (
     turn_table_degrees,
     SharedSensorState,
     STOP_EVENT,
+    DOOR_OPEN_TIMEOUT,
+    DOOR_CLOSE_TIMEOUT,
 )
 from .base_session import BaseSocialSession
 
@@ -147,7 +149,7 @@ class SocialTaskSession(BaseSocialSession):
         start_angle    = self._current_angle
         turn_direction = self._turn_to(presentation_angle)
         print(f"Table: {turn_direction} from {start_angle}° → {presentation_angle}°")
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # ── 3. LED A on → wait for port A poke (no deadline) ─────────────────
         set_led(self.ser, "A", True)
@@ -171,7 +173,14 @@ class SocialTaskSession(BaseSocialSession):
 
         # ── 4. Open door — wait for fully open; sensory timer starts ──────────
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        if not wait_for_door_state(self.shared, target_state="door opened",
+                                   timeout=DOOR_OPEN_TIMEOUT, device=self.ser):
+            if self.running and not STOP_EVENT.is_set():
+                print("[ERROR] Door never confirmed open — abandoning this trial")
+                # The door may well be physically open; close it before the
+                # next trial moves the turntable.
+                close_door_safe(self.ser, self.shared, timeout=DOOR_CLOSE_TIMEOUT)
+            return
         door_open_time = time.time()
         print("Door opened — sensory timer started")
 
@@ -248,16 +257,17 @@ class SocialTaskSession(BaseSocialSession):
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
-        wait_for_door_state(self.shared, "door closed")
+        wait_for_door_state(self.shared, "door closed",
+                            timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
         print("Door closed")
 
         # ── 11. Turntable returns to 0° or 180° (random) ──────────────────────
         # Ensure the 45° CCW partial turn motor has stopped before the return move.
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
         return_angle = random.choice([0, 180])
         self._turn_to(return_angle)
         print(f"Table returning to {return_angle}°")
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
         self._log(
@@ -290,7 +300,7 @@ class SocialTaskSession(BaseSocialSession):
 
     def _turn_ccw_partial(self, degrees: int) -> None:
         """Turn CCW by degrees. Daemon thread use only."""
-        turn_table_degrees(self.ser, -degrees)
+        turn_table_degrees(self.ser, degrees)   # positive: physical CCW (see _turn_to)
         self._current_angle = (self._current_angle - degrees) % 360
 
     def _refill_position_block(self) -> None:
@@ -303,7 +313,7 @@ class SocialTaskSession(BaseSocialSession):
              rt_to_first_table, sampling_time, total_sampling_time,
              trial_duration, presentation_angle, start_angle, turn_direction,
              reward_available, reward_triggered, outcome, valve_time_used, iti):
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":            self.trial_counter,
             "port":                 self.port,
             "trial_start":          trial_start,
@@ -325,4 +335,6 @@ class SocialTaskSession(BaseSocialSession):
             "valve_time":         valve_time_used,
             "iti":                iti,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())

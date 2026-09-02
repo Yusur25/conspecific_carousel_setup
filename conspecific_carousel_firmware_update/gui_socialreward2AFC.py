@@ -13,6 +13,14 @@ from matplotlib.patches import Circle
 import numpy as np
 import pandas as pd
 
+# Criterion constants come from the session that applies them, so the plotted
+# bar and the advance decision can never drift apart.
+from SocialReward2AFC.MixedChoice import (
+    BLOCK_SIZE as MIXED_BLOCK_SIZE,
+    ADVANCE_CRIT as MIXED_ADVANCE_CRIT,
+    MIN_FREE_TRIALS as MIXED_MIN_FREE_TRIALS,
+)
+
 
 PORT_COLORS = {"A": "#2196F3", "B": "#4CAF50", "C": "#FF9800"}
 
@@ -26,6 +34,7 @@ def _outcome_color(outcome):
         "miss":         "orange",
         "missed":       "orange",
         "correct_rejection": "blue",
+        "door_failed":  "black",   # hardware fault, not a behavioural outcome
     }.get(str(outcome), "gray")
 
 
@@ -58,7 +67,7 @@ class PerformanceGUI:
         for ax, title, ylabel, xlabel in [
             (self.ax_rt,      "Reaction time",             "RT (s)",        "Trial"),
             (self.ax_choice,  "Port choice / outcome",     "Port",          "Trial"),
-            (self.ax_block,   "Block hit rate (10 trials)","Hit rate (%)",  "Block"),
+            (self.ax_block,   "Block hit rate",            "Hit rate (%)",  "Block"),
             (self.ax_sampling,"Sampling time",             "Sampling (s)",  "Trial"),
             (self.ax_ratio,   "Forced ratio (Mixed only)", "Forced ratio",  "Block"),
         ]:
@@ -220,12 +229,19 @@ class PerformanceGUI:
         self.ax_choice.set_ylim(-0.5, 1.5)
         self.ax_choice.grid(True, axis="x")
 
-        # Block hit rate (free trials only if mixed, all otherwise)
+        # Block hit rate.
+        # Mixed sessions carry block_num, so bars are drawn per real 20-trial
+        # block using that block's free trials — the exact quantity
+        # MixedChoiceSession._evaluate_block tests against the criterion.
+        # Chunking free trials into arbitrary groups of 10 (as this used to do)
+        # crosses block boundaries and cannot be compared to the 75 % line.
         self.ax_block.clear()
-        if "trial_type" in df.columns and (df["trial_type"] == "free").any():
+        if "block_num" in df.columns and "trial_type" in df.columns:
+            self._draw_mixed_block_bars(self.ax_block, df)
+        elif "trial_type" in df.columns and (df["trial_type"] == "free").any():
             free_df = df[df["trial_type"] == "free"]
             self._draw_block_bars(self.ax_block, free_df, None,
-                                  title="Free-trial hit rate (10 trials)")
+                                  title="Free-trial hit rate (10-trial bins)")
         else:
             self._draw_block_bars(self.ax_block, df, None)
 
@@ -271,6 +287,84 @@ class PerformanceGUI:
             if not a_trials.empty:
                 return a_trials.mode().iloc[0]
         return 90
+
+    @staticmethod
+    def _draw_mixed_block_bars(ax, df: pd.DataFrame):
+        """One bar per real block: free-trial hit rate, as the criterion sees it.
+
+        Mirrors MixedChoiceSession._evaluate_block — same trials, same
+        denominator, same threshold — so a bar clearing the red line means the
+        ratio advanced (or will, once the block completes).
+
+        Bar colour encodes the decision:
+          green  — criterion met, ratio advances
+          blue   — block complete, criterion not met
+          grey   — not evaluated (fewer than MIN_FREE_TRIALS scored free trials)
+        Hatching marks the block still in progress.
+        """
+        ax.clear()
+        heights, labels, colors, hatches, annots = [], [], [], [], []
+
+        # Only the newest block can still be running. Row count is NOT a test
+        # for completeness: a door_failed trial is logged but the animal never
+        # chose, and a block whose trials were dropped for other reasons can
+        # finish with fewer than BLOCK_SIZE rows.
+        last_block = df["block_num"].max()
+
+        for block_num, block in df.groupby("block_num", sort=True):
+            # Same denominator as MixedChoiceSession._evaluate_block: free
+            # trials the animal actually got to make a choice on.
+            free = block[(block["trial_type"] == "free")
+                         & (block["outcome"] != "door_failed")]
+            n_free = len(free)
+            n_hit = int((free["outcome"] == "hit").sum())
+            n_failed = int(((block["trial_type"] == "free")
+                            & (block["outcome"] == "door_failed")).sum())
+            in_progress = block_num == last_block
+
+            if n_free == 0:
+                pct = 0.0
+            else:
+                pct = n_hit / n_free * 100
+
+            if n_free < MIXED_MIN_FREE_TRIALS:
+                color = "#BDBDBD"                       # not evaluated
+            elif pct >= MIXED_ADVANCE_CRIT * 100:
+                color = "#4CAF50"                       # criterion met
+            else:
+                color = "#2196F3"                       # complete, not met
+
+            heights.append(pct)
+            colors.append(color)
+            hatches.append("//" if in_progress else "")
+            labels.append(f"B{int(block_num)}")
+            annot = f"{n_hit}/{n_free}" if n_free else "-"
+            if n_failed:
+                annot += f"\n({n_failed} door)"   # excluded from the rate
+            annots.append(annot)
+
+        x = np.arange(len(heights))
+        bars = ax.bar(x, heights, width=0.6, color=colors,
+                      edgecolor="black", linewidth=0.5)
+        for bar, hatch in zip(bars, hatches):
+            if hatch:
+                bar.set_hatch(hatch)
+        for xi, (h, a) in enumerate(zip(heights, annots)):
+            ax.text(xi, min(h + 3, 96), a, ha="center", va="bottom", fontsize=7)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=7)
+        ax.set_ylim(0, 100)
+        ax.axhline(MIXED_ADVANCE_CRIT * 100, color="red",
+                   linewidth=1, linestyle="--", alpha=0.8)
+        ax.axhline(50, color="gray", linewidth=1, linestyle=":", alpha=0.5)
+        ax.set_title(
+            f"Free-trial hit rate per {MIXED_BLOCK_SIZE}-trial block "
+            f"(criterion {MIXED_ADVANCE_CRIT:.0%}; hatched = in progress)",
+            fontsize=8)
+        ax.set_ylabel("Hit rate (%)", fontsize=9)
+        ax.set_xlabel("Block", fontsize=9)
+        ax.grid(True, axis="y")
 
     @staticmethod
     def _draw_block_bars(ax, df: pd.DataFrame, col=None, title="Block hit rate"):

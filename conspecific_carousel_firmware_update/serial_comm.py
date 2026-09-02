@@ -32,11 +32,15 @@ class DeviceConnection:
         self._tx_callbacks = []
         self._error_callbacks = []
 
+        self._reader_alive = False
+        self._last_error_print = 0.0
+
     # ---- lifecycle ----
 
     def connect(self):
         self._serial = serial.Serial(self._port, self._baudrate, timeout=0.1)
         self._running = True
+        self._reader_alive = True
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
 
@@ -45,6 +49,7 @@ class DeviceConnection:
         if self._reader_thread:
             self._reader_thread.join(timeout=2.0)
             self._reader_thread = None
+        self._reader_alive = False
         if self._serial and self._serial.is_open:
             self._serial.close()
         self._serial = None
@@ -52,6 +57,17 @@ class DeviceConnection:
     @property
     def is_connected(self):
         return self._serial is not None and self._serial.is_open
+
+    @property
+    def is_reader_alive(self):
+        """False once the reader thread has died.
+
+        When it dies no further sensor events are ever delivered, so every wait
+        on device state blocks forever.  Callers that block on shared state
+        should treat this as fatal rather than waiting on a stream that has
+        stopped.
+        """
+        return self._reader_alive
 
     # ---- callback registration ----
 
@@ -79,6 +95,30 @@ class DeviceConnection:
 
     # ---- internals ----
 
+    def _report_error(self, msg, throttle=0.0):
+        """Surface an error to the registered callbacks *and* to the console.
+
+        Printing unconditionally matters: registering an error callback is
+        optional, so anything reported only through the callback list is
+        silently discarded whenever a caller forgot to register one — which is
+        exactly how a dead reader thread or a stream of ACK timeouts can take
+        down a session without leaving a trace.
+
+        `throttle` suppresses repeats for that many seconds, for errors that can
+        recur every loop iteration.
+        """
+        if throttle:
+            t = time.time()
+            if t - self._last_error_print < throttle:
+                return
+            self._last_error_print = t
+        print(f"[SERIAL] {msg}")
+        for cb in self._error_callbacks:
+            try:
+                cb(msg)
+            except Exception:
+                pass
+
     def _send_with_retry(self, packet, register):
         with self._lock:
             # drain stale ACKs
@@ -98,8 +138,7 @@ class DeviceConnection:
                     return ack
                 except queue.Empty:
                     last_err = f"Timeout (attempt {attempt + 1}/{self._retries}) for 0x{register:02X}"
-                    for cb in self._error_callbacks:
-                        cb(last_err)
+                    self._report_error(last_err)
 
             raise TimeoutError(
                 f"No ACK received after {self._retries} attempts for register 0x{register:02X}"
@@ -142,12 +181,22 @@ class DeviceConnection:
 
             except serial.SerialException as e:
                 if self._running:
-                    for cb in self._error_callbacks:
-                        cb(f"Serial error: {e}")
+                    self._report_error(
+                        f"Serial error: {e} — READER THREAD IS STOPPING. No further "
+                        f"sensor events will be received; the session cannot advance."
+                    )
                 break
             except Exception as e:
                 if self._running:
-                    for cb in self._error_callbacks:
-                        cb(f"Read error: {e}")
+                    # Throttled: this can otherwise repeat every 10 ms.
+                    self._report_error(f"Read error: {e}", throttle=5.0)
 
             time.sleep(0.01)
+
+        self._reader_alive = False
+        if self._running:
+            # Exiting while still nominally running means the loop broke on an
+            # error rather than on disconnect() — say so loudly, because every
+            # wait on shared sensor state is now permanently stuck.
+            self._report_error("Reader thread has exited unexpectedly — "
+                               "reconnect required")

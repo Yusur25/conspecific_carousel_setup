@@ -13,7 +13,8 @@
 #         correct_port poked → hit + reward
 #         other port poked  → error (trial ends immediately, no reward)
 #         deadline elapsed  → miss
-#   8. LED(s) off → close_door_safe → turntable returns to 0° or 180° (random)
+#   8. LED(s) off → close_door_safe → turntable returns to 0° or 180° (random),
+#      measured from the exact physical position the table had at session start
 #   9. Log → ITI (2–7 s)
 #
 # Correct port assignment:
@@ -38,6 +39,8 @@ from hardware import (
     turn_table_degrees,
     SharedSensorState,
     STOP_EVENT,
+    DOOR_OPEN_TIMEOUT,
+    DOOR_CLOSE_TIMEOUT,
 )
 from .base_session import Base2AFCSession
 
@@ -114,17 +117,14 @@ class TaskBase2AFC(Base2AFCSession):
         turn_direction = self._turn_to(presentation_angle)
         print(f"Table: {turn_direction} → {presentation_angle}° "
               f"(correct port: {correct_port})")
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # 2. Port C LED on → poke C (no deadline)
         set_led(self.ser, "C", True)
         print("Waiting for port C poke...")
         ledC_onset = time.time()
 
-        while self.running and not STOP_EVENT.is_set():
-            if self.shared.get_port("C")[0] == "cleared":
-                break
-            time.sleep(0.005)
+        self._wait_for_ports_cleared(["C"])
 
         pokedC = self._wait_for_poke("C")
         if not pokedC:
@@ -137,7 +137,36 @@ class TaskBase2AFC(Base2AFCSession):
 
         # 3. Open door → wait for fully open
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, "door opened", timeout=None)
+        if not wait_for_door_state(self.shared, "door opened",
+                                   timeout=DOOR_OPEN_TIMEOUT, device=self.ser):
+            if not self.running or STOP_EVENT.is_set():
+                return {}   # session stopped mid-trial — nothing to log
+            print("[ERROR] Door never confirmed open — trial scored as door_failed")
+            # The door may well be physically open; close it before the next
+            # trial rotates the turntable.
+            close_door_safe(self.ser, self.shared, timeout=DOOR_CLOSE_TIMEOUT)
+            # Log the trial rather than dropping it: a silently skipped row
+            # leaves a gap in trial_num that is indistinguishable from a session
+            # stop, and hides how often the door is failing.
+            return {
+                "presentation_angle": presentation_angle,
+                "correct_port":       correct_port,
+                "poked_port":         None,
+                "trial_type":         trial_type,
+                "outcome":            "door_failed",
+                "rt":                 np.nan,
+                "rt_dooropen":        rt_dooropen,
+                "rt_tablehold":       np.nan,
+                "rt_to_first_table":  np.nan,
+                "sampling_time":      np.nan,
+                "total_sampling_time": 0.0,
+                "start_angle":        start_angle,
+                "turn_direction":     turn_direction,
+                "reward_triggered":   False,
+                "valve_time":         np.nan,
+                "trial_start":        np.nan,
+                "trial_end":          time.time(),
+            }
         door_open_time = time.time()
         print("Door opened — sensory timer started")
 
@@ -183,10 +212,7 @@ class TaskBase2AFC(Base2AFCSession):
         ).start()
 
         # Ensure ports cleared before accepting poke
-        while self.running and not STOP_EVENT.is_set():
-            if all(self.shared.get_port(p)[0] == "cleared" for p in ["A", "B"]):
-                break
-            time.sleep(0.005)
+        self._wait_for_ports_cleared(["A", "B"])
 
         trial_start = time.time()
         deadline_ab = trial_start + self.decision_window
@@ -219,13 +245,25 @@ class TaskBase2AFC(Base2AFCSession):
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
-        wait_for_door_state(self.shared, "door closed")
+        door_closed = wait_for_door_state(self.shared, "door closed",
+                                          timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
 
-        wait_for_table_stopped(self.shared)
-        return_angle = random.choice([0, 180])
-        self._turn_to(return_angle)
-        wait_for_table_stopped(self.shared)
-        print(f"Table returned to {return_angle}°")
+        if not door_closed and self.running and not STOP_EVENT.is_set():
+            # Warn and carry on: the close_door_safe thread spawned above is
+            # still working the door in the background, and the next trial has
+            # to rotate the turntable regardless, so stopping here would only
+            # delay the same movement. Check the door if you see this repeatedly.
+            print(f"[WARNING] Door not confirmed closed within {DOOR_CLOSE_TIMEOUT:.0f} s "
+                  f"— continuing anyway; turntable is about to move")
+
+        if self.running and not STOP_EVENT.is_set():
+            # Wait for the 45° partial move to finish before computing the return
+            # turn, so _current_angle is up to date (it is written by that thread).
+            wait_for_table_stopped(self.shared, device=self.ser)
+            return_angle = random.choice([0, 180])
+            self._turn_to(return_angle)
+            wait_for_table_stopped(self.shared, device=self.ser)
+            print(f"Table returned to {return_angle}°")
 
         return {
             "presentation_angle": presentation_angle,
@@ -261,5 +299,6 @@ class TaskBase2AFC(Base2AFCSession):
         return direction
 
     def _turn_ccw_partial(self, degrees: int) -> None:
-        turn_table_degrees(self.ser, -degrees)
+        """Turn CCW by degrees. Called in a daemon thread."""
+        turn_table_degrees(self.ser, degrees)   # positive: physical CCW (see _turn_to)
         self._current_angle = (self._current_angle - degrees) % 360

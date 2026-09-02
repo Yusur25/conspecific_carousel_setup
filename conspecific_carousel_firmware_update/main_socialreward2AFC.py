@@ -14,16 +14,53 @@
 
 import time
 import signal
-import os
+import os  
 import json
+import subprocess
+import sys
 from datetime import datetime
 
 from serial_comm import DeviceConnection
 from hardware import (
-    SharedSensorState, EventLogger, STOP_EVENT, shutdown_outputs,
+    SharedSensorState, EventLogger, CameraTriggerLogger, STOP_EVENT, shutdown_outputs,
     turn_table_degrees, apply_motor_speeds,
 )
 from setup_gui_2AFC import SetupDialog2AFC
+
+# cameracontrol lives at the repo root, one level up from this file's folder.
+CAMERACONTROL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cameracontrol")
+
+# Keyboard key the operator presses (with a GUI window focused) to toggle the
+# manual door override during task/passivetest sessions: press once to force the
+# door open on a mechanical failure/obstruction, press again to close it and
+# resume. See _bind_door_override and hardware.close_door_safe.
+DOOR_OVERRIDE_KEY = "d"
+
+
+def _bind_door_override(override_event, *guis):
+    """Let the operator toggle `override_event` by pressing DOOR_OVERRIDE_KEY on
+    any of the given matplotlib GUI windows (whichever currently has focus).
+
+    Also removes DOOR_OVERRIDE_KEY from matplotlib's default keyboard shortcuts
+    so pressing it doesn't also trigger a built-in figure action.
+    """
+    import matplotlib.pyplot as plt
+    for param, keys in list(plt.rcParams.items()):
+        if param.startswith("keymap.") and DOOR_OVERRIDE_KEY in keys:
+            keys.remove(DOOR_OVERRIDE_KEY)
+
+    def _handler(event):
+        if event.key == DOOR_OVERRIDE_KEY:
+            override_event.set()
+            print(f"[OVERRIDE] Door override key '{DOOR_OVERRIDE_KEY}' pressed")
+
+    for gui in guis:
+        try:
+            gui.fig.canvas.mpl_connect("key_press_event", _handler)
+        except Exception as e:
+            print(f"[WARN] Could not bind door override key on a GUI: {e}")
+
 
 
 def handle_sigint(_sig, _frame):
@@ -52,12 +89,81 @@ def _save_metadata(save_dir, params):
         json.dump(meta, f, indent=2, default=str)
     print(f"[INFO] Metadata saved: {path}")
 
+def _start_camera_recording(session_start: float, save_dir: str,
+                            camera: str = ""):
+    """Launch cameracontrol as a background subprocess, sharing this session's
+    clock (so its frame_timestamps.csv lines up with sensor_events.csv etc.)
+    and writing directly into this session's save folder. Returns the Popen
+    handle, or None if the camera couldn't be started (non-fatal — the
+    behavioral session continues without video).
+
+    `camera` is the serial number picked in the setup GUI; blank means "first
+    camera found" (the only sensible choice with a single camera attached)."""
+    try:
+        # On Windows, a child process shares the parent's console by default,
+        # so Ctrl+C would hit cameracontrol directly too (bypassing its own
+        # cleanup). Putting it in its own process group means it only ever
+        # stops via the explicit stdin signal below.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        cmd = [sys.executable, CAMERACONTROL_PATH,
+               "--session-start", str(session_start),
+               "--save-dir", save_dir,
+               # "reuse" loads the saved crop (or full frame if none saved yet)
+               # with no prompt — cameracontrol's interactive "ask" default would
+               # block forever here since stdin is a pipe we only write to on stop.
+               "--crop", "reuse"]
+        if camera:
+            cmd += ["--camera", camera]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            creationflags=creationflags,
+        )
+        print(f"[INFO] Camera recording started (PID {proc.pid}, "
+              f"camera {camera or 'first found'}) → {save_dir}")
+        return proc
+    except Exception as e:
+        print(f"[WARN] Could not start camera recording: {e}")
+        return None
+
+
+def _stop_camera_recording(proc, timeout: float = 15.0):
+    """Signal cameracontrol to stop (as if ENTER were pressed) and wait for a
+    clean exit; escalates to terminate/kill if it doesn't stop in time."""
+    if proc is None:
+        return
+    print("[INFO] Stopping camera recording...")
+    try:
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.write(b"\n")
+            proc.stdin.flush()
+    except Exception:
+        pass  # pipe may already be broken if the process already exited
+    finally:
+        try:
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        except Exception:
+            pass
+
+    try:
+        proc.wait(timeout=timeout)
+        print("[INFO] Camera recording stopped cleanly")
+    except subprocess.TimeoutExpired:
+        print("[WARN] Camera process did not stop in time — terminating")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 
 def _run_loop(session, shared, sensor_gui, perf_gui):
     while session.running and not STOP_EVENT.is_set():
         snap = shared.get()
         sensor_gui.update(snap)
-        perf_gui.update(session.results_df)
+        perf_gui.update(session.snapshot(session.results_df))
         time.sleep(0.05)
 
 
@@ -86,9 +192,11 @@ def main():
     from gui_socialreward2AFC          import SensorGUI, PerformanceGUI
 
     # Output directory
+    session_start = time.time()
     date_str      = datetime.now().strftime("%Y-%m-%d")
+    save_root     = params.get("save_root") or "SocialReward2AFCData"
     BASE_SAVE_DIR = os.path.join(
-        "SocialReward2AFCData",
+        save_root,
         f"{animal}_{session_n}_{phase}_{date_str}_{species}",
     )
     os.makedirs(BASE_SAVE_DIR, exist_ok=True)
@@ -101,14 +209,27 @@ def main():
     sensor_log = os.path.join(BASE_SAVE_DIR, "sensor_events.csv")
     trial_csv  = os.path.join(BASE_SAVE_DIR, "trials.csv")
     perf_fig   = os.path.join(BASE_SAVE_DIR, "performance.png")
+    camera_sync_log = os.path.join(BASE_SAVE_DIR, "camera_sync.csv")
 
-    # Connect
+    # ── Start camera recording (before device connect / task GUIs) ───────────
+    # Optional — only started if the operator checked "Record camera" in the
+    # setup GUI (_stop_camera_recording is a no-op on a None handle).
+    camera_proc = None
+    if params.get("record_camera", True):
+        camera_proc = _start_camera_recording(
+            session_start, BASE_SAVE_DIR, params.get("camera_serial", ""))
+    else:
+        print("[INFO] Camera recording disabled (not checked in setup)")
+
+        
+    # ── Connect to device ─────────────────────────────────────────────────────
     try:
         device = DeviceConnection(port, baudrate=baud)
         device.connect()
         time.sleep(2)
     except Exception as e:
         print(f"[ERROR] Cannot open serial port: {e}")
+        _stop_camera_recording(camera_proc)
         return
 
     apply_motor_speeds(
@@ -126,6 +247,26 @@ def main():
     )
     device.on_event(logger)
 
+    # Surface serial faults. Without this every ACK timeout and every reader-thread
+    # death is discarded silently — and a dead reader means no sensor events ever
+    # arrive again, so the session blocks on device state with nothing printed.
+    def _on_serial_error(msg):
+        print(f"[ERROR] Serial: {msg}")
+
+    device.on_error(_on_serial_error)
+
+    # Camera sync-pulse timestamps (~1 Hz heartbeat from cameracontrol, not a
+    # per-frame strobe) — logged continuously for the whole session, the same
+    # way EventLogger logs sensor events, independent of mode/presentations/
+    # animal behavior.
+    camera_logger = CameraTriggerLogger(
+        log_path=camera_sync_log,
+        session_start=session_start,
+    )
+    device.on_event(camera_logger)
+    print(f"[INFO] Camera sync-pulse log: {camera_sync_log}")
+
+    # GUI
     sensor_gui = SensorGUI()
     perf_gui   = PerformanceGUI(animal_name=animal, phase_selection=phase)
 
@@ -266,6 +407,7 @@ def main():
         device.disconnect()
         perf_gui.close(save_path=perf_fig)
         sensor_gui.close()
+        _stop_camera_recording(camera_proc)
         print("[INFO] Clean shutdown complete")
 
 

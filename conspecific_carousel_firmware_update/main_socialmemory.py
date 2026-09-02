@@ -78,30 +78,38 @@ def _save_metadata(save_dir, params):
     print(f"[INFO] Metadata saved: {path}")
 
 
-def _start_camera_recording(session_start: float, save_dir: str):
+def _start_camera_recording(session_start: float, save_dir: str,
+                            camera: str = ""):
     """Launch cameracontrol as a background subprocess, sharing this session's
     clock (so its frame_timestamps.csv lines up with sensor_events.csv etc.)
     and writing directly into this session's save folder. Returns the Popen
     handle, or None if the camera couldn't be started (non-fatal — the
-    behavioral session continues without video)."""
+    behavioral session continues without video).
+
+    `camera` is the serial number picked in the setup GUI; blank means "first
+    camera found" (the only sensible choice with a single camera attached)."""
     try:
         # On Windows, a child process shares the parent's console by default,
         # so Ctrl+C would hit cameracontrol directly too (bypassing its own
         # cleanup). Putting it in its own process group means it only ever
         # stops via the explicit stdin signal below.
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        cmd = [sys.executable, CAMERACONTROL_PATH,
+               "--session-start", str(session_start),
+               "--save-dir", save_dir,
+               # "reuse" loads the saved crop (or full frame if none saved yet)
+               # with no prompt — cameracontrol's interactive "ask" default would
+               # block forever here since stdin is a pipe we only write to on stop.
+               "--crop", "reuse"]
+        if camera:
+            cmd += ["--camera", camera]
         proc = subprocess.Popen(
-            [sys.executable, CAMERACONTROL_PATH,
-             "--session-start", str(session_start),
-             "--save-dir", save_dir,
-             # "reuse" loads the saved crop (or full frame if none saved yet)
-             # with no prompt — cameracontrol's interactive "ask" default would
-             # block forever here since stdin is a pipe we only write to on stop.
-             "--crop", "reuse"],
+            cmd,
             stdin=subprocess.PIPE,
             creationflags=creationflags,
         )
-        print(f"[INFO] Camera recording started (PID {proc.pid}) → {save_dir}")
+        print(f"[INFO] Camera recording started (PID {proc.pid}, "
+              f"camera {camera or 'first found'}) → {save_dir}")
         return proc
     except Exception as e:
         print(f"[WARN] Could not start camera recording: {e}")
@@ -219,7 +227,8 @@ def main():
     # setup GUI (_stop_camera_recording is a no-op on a None handle).
     camera_proc = None
     if params.get("record_camera", True):
-        camera_proc = _start_camera_recording(session_start, BASE_SAVE_DIR)
+        camera_proc = _start_camera_recording(
+            session_start, BASE_SAVE_DIR, params.get("camera_serial", ""))
     else:
         print("[INFO] Camera recording disabled (not checked in setup)")
 
@@ -248,6 +257,14 @@ def main():
         session_start=session_start,
     )
     device.on_event(logger)
+
+    # Surface serial faults. Without this every ACK timeout and every reader-thread
+    # death is discarded silently — and a dead reader means no sensor events ever
+    # arrive again, so the session blocks on device state with nothing printed.
+    def _on_serial_error(msg):
+        print(f"[ERROR] Serial: {msg}")
+
+    device.on_error(_on_serial_error)
 
     # Camera sync-pulse timestamps (~1 Hz heartbeat from cameracontrol, not a
     # per-frame strobe) — logged continuously for the whole session, the same

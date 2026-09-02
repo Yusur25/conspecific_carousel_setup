@@ -67,7 +67,7 @@ class ForcedChoiceSession(TaskBase2AFC):
             return   # session stopped mid-trial
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":          self.trial_counter,
             "trial_type":         "forced",
             "presentation_angle": data["presentation_angle"],
@@ -89,6 +89,8 @@ class ForcedChoiceSession(TaskBase2AFC):
             "trial_start":        data["trial_start"],
             "trial_end":          data["trial_end"],
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)
         print("Trial complete")

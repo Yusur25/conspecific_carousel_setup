@@ -61,7 +61,8 @@ def _run_loop(session, shared, sensor_gui, perf_gui):
         snap = shared.get()
         sensor_gui.update(snap)
         planned = getattr(session, "planned_sequence", None)
-        perf_gui.update(session.results_df, current_trial_port="C",
+        perf_gui.update(session.snapshot(session.results_df),
+                        current_trial_port="C",
                         planned_sequence=planned)
         time.sleep(0.05)
 
@@ -146,6 +147,14 @@ def main():
         session_start=session_start,
     )
     device.on_event(logger)
+
+    # Surface serial faults. Without this every ACK timeout and every reader-thread
+    # death is discarded silently — and a dead reader means no sensor events ever
+    # arrive again, so the session blocks on device state with nothing printed.
+    def _on_serial_error(msg):
+        print(f"[ERROR] Serial: {msg}")
+
+    device.on_error(_on_serial_error)
 
     # ── GUIs ──────────────────────────────────────────────────────────────────
     sensor_gui = SensorGUI()

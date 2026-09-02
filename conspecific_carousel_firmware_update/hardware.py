@@ -67,6 +67,54 @@ current_table_position = DEFAULT_TABLE_POSITION
 SENSOR_HOLD_TIME = 0.1   # seconds a sensor must stay triggered to count as a poke
 STOP_EVENT = threading.Event()
 
+# ── Blocking-wait safety ──────────────────────────────────────────────────────
+#
+# The firmware reports door/table status as one-shot EVENT packets sent only
+# when the status *changes*.  A single dropped packet therefore leaves shared
+# state permanently stale, and any wait for the state that packet would have
+# announced blocks forever — silently, since nothing else in the session prints
+# while it waits.  (Observed in ~1 session in 4: the door physically opens, the
+# 'door opened' event never arrives, and the trial loop parks on it for the rest
+# of the session while the animal keeps working the sensors.)
+#
+# Two defences, applied to every wait that can block on device state:
+#   • resync — re-read the status register directly and correct shared state,
+#     so a lost event costs a couple of seconds instead of the session
+#   • timeout + heartbeat — never wait unbounded, and say so while waiting
+
+DOOR_OPEN_TIMEOUT = 20.0    # s; opening takes ~2 s in practice
+DOOR_CLOSE_TIMEOUT = 30.0   # s; closing takes ~8 s, plus pauses while the animal
+                            # blocks the door sensor.  Reaching this is a warning,
+                            # not a fault: the trial carries on and the background
+                            # close_door_safe keeps working on the door.
+DOOR_RESYNC_EVERY = 2.5     # s between direct status re-reads while waiting
+HEARTBEAT_EVERY = 30.0      # s between "still waiting" progress lines
+
+
+class WaitHeartbeat:
+    """Prints a periodic progress line while a blocking wait drags on.
+
+    Without this a stalled wait is indistinguishable from a frozen program:
+    the session simply stops printing and there is nothing to tell an operator
+    which step it died on.
+    """
+
+    def __init__(self, what: str, every: float = HEARTBEAT_EVERY):
+        self._what = what
+        self._every = every
+        self._start = time.time()
+        self._next = self._start + every
+
+    def tick(self) -> None:
+        if self._every <= 0:
+            return
+        t = time.time()
+        if t >= self._next:
+            self._next = t + self._every
+            # ASCII only — like the resync warning, this must never be the thing
+            # that raises on a cp1252 console.
+            print(f"[WAITING] {self._what} - {t - self._start:.0f} s so far")
+
 # ── Thread-safe sensor state ──────────────────────────────────────────────────
 
 @dataclass
@@ -464,7 +512,7 @@ def close_door(
         state, _ = shared.get_port("door")
         if state != "door opened":
             print("[INFO] Waiting for door to reach opened state before closing...")
-            success = wait_for_door_state(shared, "door opened", timeout)
+            success = wait_for_door_state(shared, "door opened", timeout, device=device)
             if not success:
                 print("[ERROR] Door failed to open; aborting close.")
                 return
@@ -486,6 +534,7 @@ def close_door_safe(
     poll_interval: float = 0.02,
     override: Optional[threading.Event] = None,
     timeout: Optional[float] = None,
+    held_open: Optional[threading.Event] = None,
 ) -> None:
     """Close the door with active sensor monitoring.
 
@@ -520,14 +569,24 @@ def close_door_safe(
     as before. Because this function still only returns once the door reaches
     'door closed', a caller waiting on that state resumes gracefully after the
     operator finishes.
+
+    `held_open` is an output signal, not an input: it is set while the operator
+    is holding the door open and cleared when the close resumes. Pass the same
+    event to wait_for_door_state(pause_event=...) so a caller waiting on
+    'door closed' with a timeout doesn't expire — and carry on with the door
+    still open — while the operator works on the door.
     """
     paused = False       # auto-paused because a proximity sensor is triggered
     forced_open = False  # operator override is currently holding the door open
     if override is not None:
         override.clear()  # ignore any stale press from before this close began
+    if held_open is not None:
+        held_open.clear()  # this close starts with the door not held by anyone
     device.write_register(REG_DOOR_CMD, 0x01)  # initial close command
 
     deadline = None if timeout is None else time.time() + timeout
+    last_resync = time.time()
+    heartbeat = WaitHeartbeat("door to close")
 
     while not STOP_EVENT.is_set():
         # ── Operator override toggle ──────────────────────────────────────────
@@ -537,10 +596,14 @@ def close_door_safe(
             if forced_open:
                 device.write_register(REG_DOOR_CMD, 0x00)  # force open
                 paused = False
+                if held_open is not None:
+                    held_open.set()
                 print("[OVERRIDE] Door forced OPEN — clear the obstruction, "
                       "then press the override key again to close and resume")
             else:
                 device.write_register(REG_DOOR_CMD, 0x01)  # resume close
+                if held_open is not None:
+                    held_open.clear()
                 print("[OVERRIDE] Override released — door closing, resuming program")
 
         if forced_open:
@@ -556,6 +619,14 @@ def close_door_safe(
         door_state, _ = shared.get_port("door")
         if door_state == "door closed":
             return
+
+        # A dropped 'door closed' event would otherwise keep this loop (and the
+        # trial waiting on the same state) running against a door that is
+        # already shut — re-read the register periodically to catch that.
+        if time.time() - last_resync >= DOOR_RESYNC_EVERY:
+            last_resync = time.time()
+            if resync_door_state(device, shared) == "door closed":
+                return
 
         if deadline is not None and time.time() > deadline:
             print(f"[WARNING] Door not confirmed closed within {timeout:.0f} s "
@@ -576,33 +647,156 @@ def close_door_safe(
             paused = False
             print("[INFO] Door resuming close — sensors cleared")
 
+        heartbeat.tick()
         time.sleep(poll_interval)
 
 
 # ── Waiting helpers ───────────────────────────────────────────────────────────
 
+RESYNC_FAILURE_LIMIT = 2   # give up on a register after this many failed reads
+
+# Registers whose READ path this device does not answer.  A failed read costs a
+# full ACK timeout (retries x timeout) with the device lock held, which would
+# stall LED/valve writes on every wait — so once a register has proved
+# unreadable, stop asking and fall back to the timeout backstop alone.
+_resync_failures: dict = {}
+_resync_unsupported: set = set()
+
+
+def _resync_status(
+    device: DeviceConnection,
+    shared: SharedSensorState,
+    key: str,
+    register: int,
+    decode,
+    label: str,
+) -> Optional[str]:
+    """Read a status register directly and reconcile it into shared state.
+
+    The firmware only emits a status EVENT when the status *changes*, so a
+    dropped or corrupted event packet leaves shared state stale with no second
+    announcement ever coming to correct it — e.g. stuck at 'door moving' after
+    the door has physically finished opening.  Reading the register asks the
+    device what it is doing right now instead of waiting for a message that
+    already went missing.
+
+    Returns the freshly read state, or None if the read failed.
+    """
+    if register in _resync_unsupported:
+        return None
+
+    try:
+        ack = device.read_register(register)
+    except (TimeoutError, AttributeError, OSError) as e:
+        print(f"[WARNING] Could not read {label} status register: {e}")
+        ack = None
+
+    if not ack or ack[0] != register:
+        _resync_failures[register] = _resync_failures.get(register, 0) + 1
+        if _resync_failures[register] >= RESYNC_FAILURE_LIMIT:
+            _resync_unsupported.add(register)
+            print(f"[WARNING] This device does not answer reads of the {label} "
+                  f"status register - disabling {label} resync for the rest of "
+                  f"the session. Lost {label} events can no longer self-correct; "
+                  f"waits will fall back to their timeout.")
+        return None
+
+    _resync_failures.pop(register, None)
+
+    state = decode(ack[1])
+    prev, _ = shared.get_port(key)
+    if prev != state:
+        # ASCII arrow on purpose: this line prints from inside a recovery path,
+        # and a UnicodeEncodeError on a cp1252 console would turn the recovery
+        # into the very crash it exists to prevent.
+        print(f"[WARNING] {label.capitalize()} status event was lost - resynced "
+              f"by direct read: '{prev}' -> '{state}'")
+        shared.update(key, state, now())
+    return state
+
+
+def resync_door_state(
+    device: DeviceConnection,
+    shared: SharedSensorState,
+) -> Optional[str]:
+    """Re-read REG_DOOR_STATUS and correct shared state.  See _resync_status."""
+    return _resync_status(
+        device, shared, "door", REG_DOOR_STATUS,
+        lambda v: DOOR_STATUS_STR.get(v, f"door unknown(0x{v:02X})"),
+        "door",
+    )
+
+
+def resync_table_motor_state(
+    device: DeviceConnection,
+    shared: SharedSensorState,
+) -> Optional[str]:
+    """Re-read REG_TABLE_STATUS and correct shared state.  See _resync_status.
+
+    A dropped 'table stopped' event does not hang the session (the wait is
+    bounded), but it does leave shared state reading 'table moving' forever
+    after, which costs a full timeout on every subsequent table move.
+    """
+    return _resync_status(
+        device, shared, "table_motor", REG_TABLE_STATUS,
+        lambda v: "table moving" if v else "table stopped",
+        "table motor",
+    )
+
+
 def wait_for_door_state(
     shared: SharedSensorState,
     target_state: str,
     timeout: Optional[float] = None,
+    device: Optional[DeviceConnection] = None,
+    resync_every: float = DOOR_RESYNC_EVERY,
+    pause_event: Optional[threading.Event] = None,
 ) -> bool:
-    """Block until mechanical door reaches target_state ('door opened', 'door closed', …)."""
+    """Block until mechanical door reaches target_state ('door opened', 'door closed', …).
+
+    Pass `device` whenever one is available: it lets this wait recover from a
+    lost door-status event by re-reading the status register every
+    `resync_every` seconds (see resync_door_state).  Without it, one missing
+    event blocks this call — and the session thread behind it — indefinitely.
+
+    `pause_event` (close_door_safe's `held_open`) suspends the timeout while it
+    is set.  An operator holding the door open to clear a jam must not be timed
+    out: the caller would carry on — and, in a stimulus task, move the turntable
+    — with the door still open and someone's hands in it.
+
+    Returns True if the state was reached, False on STOP_EVENT or timeout.
+    """
     start_time = time.time()
+    last_resync = start_time
+    heartbeat = WaitHeartbeat(f"door to reach '{target_state}'")
     while True:
         if STOP_EVENT.is_set():
             return False
         state, _ = shared.get_port("door")
         if state == target_state:
             return True
-        if timeout and (time.time() - start_time) > timeout:
-            print(f"[WARNING] Door did not reach '{target_state}' within {timeout}s")
+
+        t = time.time()
+        if pause_event is not None and pause_event.is_set():
+            start_time = t   # operator is on the door — restart the clock
+
+        if device is not None and resync_every and (t - last_resync) >= resync_every:
+            last_resync = t
+            if resync_door_state(device, shared) == target_state:
+                return True
+
+        if timeout and (t - start_time) > timeout:
+            print(f"[WARNING] Door did not reach '{target_state}' within {timeout}s "
+                  f"(last known state: '{state}')")
             return False
+        heartbeat.tick()
         time.sleep(0.01)
 
 
 def wait_for_door_clear(shared: SharedSensorState) -> bool:
     """Block until the door proximity sensor is clear for at least 100 ms."""
     clear_start = None
+    heartbeat = WaitHeartbeat("door sensor to clear")
     while True:
         if STOP_EVENT.is_set():
             return False
@@ -614,12 +808,14 @@ def wait_for_door_clear(shared: SharedSensorState) -> bool:
                 return True
         else:
             clear_start = None
+        heartbeat.tick()
         time.sleep(0.01)
 
 
 def wait_for_table_clear(shared: SharedSensorState) -> bool:
     """Block until the table proximity sensor is clear for at least 100 ms."""
     clear_start = None
+    heartbeat = WaitHeartbeat("table sensor to clear")
     while True:
         if STOP_EVENT.is_set():
             return False
@@ -631,18 +827,25 @@ def wait_for_table_clear(shared: SharedSensorState) -> bool:
                 return True
         else:
             clear_start = None
+        heartbeat.tick()
         time.sleep(0.01)
 
 
 def wait_for_table_stopped(
     shared: SharedSensorState,
     timeout: float = 30.0,
+    device: Optional[DeviceConnection] = None,
+    resync_every: float = DOOR_RESYNC_EVERY,
 ) -> bool:
     """Block until the table motor stops after a move command.
 
     Waits up to 0.5 s for the motor to start (firmware latency grace period),
     then blocks until 'table stopped' is reported.  Returns True when stopped,
     False on STOP_EVENT or overall timeout.
+
+    Pass `device` to recover from a lost table-status event by re-reading the
+    status register (see resync_table_motor_state); without it a dropped
+    'table stopped' burns the full timeout here and on every later move.
     """
     deadline = time.time() + timeout
 
@@ -660,6 +863,8 @@ def wait_for_table_stopped(
         # Motor never started — zero-distance move or already complete
         return True
 
+    last_resync = time.time()
+    heartbeat = WaitHeartbeat("table motor to stop")
     while not STOP_EVENT.is_set():
         if time.time() > deadline:
             print("[WARNING] Table did not stop within timeout")
@@ -667,6 +872,13 @@ def wait_for_table_stopped(
         state, _ = shared.get_port("table_motor")
         if state == "table stopped":
             return True
+
+        if device is not None and resync_every and (time.time() - last_resync) >= resync_every:
+            last_resync = time.time()
+            if resync_table_motor_state(device, shared) == "table stopped":
+                return True
+
+        heartbeat.tick()
         time.sleep(0.01)
 
     return False
@@ -675,6 +887,7 @@ def wait_for_table_stopped(
 def wait_for_door_and_table_clear(shared: SharedSensorState) -> bool:
     """Block until BOTH door and table proximity sensors are clear for at least 100 ms."""
     clear_start = None
+    heartbeat = WaitHeartbeat("door and table sensors to clear")
     while True:
         if STOP_EVENT.is_set():
             return False
@@ -687,4 +900,5 @@ def wait_for_door_and_table_clear(shared: SharedSensorState) -> bool:
                 return True
         else:
             clear_start = None
+        heartbeat.tick()
         time.sleep(0.01)

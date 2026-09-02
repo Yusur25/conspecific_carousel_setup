@@ -39,6 +39,8 @@ from hardware import (
     turn_table_degrees,
     SharedSensorState,
     STOP_EVENT,
+    DOOR_OPEN_TIMEOUT,
+    DOOR_CLOSE_TIMEOUT,
 )
 from .base_session import BaseSocialSession
 
@@ -142,7 +144,7 @@ class Phase4StimuliSession(BaseSocialSession):
         start_angle    = self._current_angle
         turn_direction = self._turn_to(presentation_angle)
         print(f"Table: {turn_direction} from {start_angle}° → {presentation_angle}°")
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         # ── 3. LED A on → wait for port A poke (no deadline) ─────────────────
         set_led(self.ser, "A", True)
@@ -165,7 +167,14 @@ class Phase4StimuliSession(BaseSocialSession):
 
         # ── 4. Open door — wait fully open ────────────────────────────────────
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        if not wait_for_door_state(self.shared, target_state="door opened",
+                                   timeout=DOOR_OPEN_TIMEOUT, device=self.ser):
+            if self.running and not STOP_EVENT.is_set():
+                print("[ERROR] Door never confirmed open — abandoning this trial")
+                # The door may well be physically open; close it before the
+                # next trial moves the turntable.
+                close_door_safe(self.ser, self.shared, timeout=DOOR_CLOSE_TIMEOUT)
+            return
         door_open_time = time.time()
         print("Door opened — sensory timer started")
 
@@ -242,17 +251,18 @@ class Phase4StimuliSession(BaseSocialSession):
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
-        wait_for_door_state(self.shared, "door closed")
+        wait_for_door_state(self.shared, "door closed",
+                            timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
 
         # ── 10. Return to random position (45–180° from current, mult. of 45°) ─
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
         magnitude    = random.choice([45, 90, 135, 180])
         direction    = random.choice([1, -1])
         return_angle = (self._current_angle + direction * magnitude) % 360
         self._turn_to(return_angle)
         print(f"Table → {return_angle}° "
               f"(random {magnitude}° {'CW' if direction > 0 else 'CCW'})")
-        wait_for_table_stopped(self.shared)
+        wait_for_table_stopped(self.shared, device=self.ser)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
         self._log(
@@ -278,7 +288,8 @@ class Phase4StimuliSession(BaseSocialSession):
         return direction
 
     def _turn_ccw_partial(self, degrees: int) -> None:
-        turn_table_degrees(self.ser, -degrees)
+        """Turn CCW by degrees. Daemon thread use only."""
+        turn_table_degrees(self.ser, degrees)   # positive: physical CCW (see _turn_to)
         self._current_angle = (self._current_angle - degrees) % 360
 
     def _log(self, trial_start, trial_end, trial_duration, rt, rt_dooropen,
@@ -286,7 +297,7 @@ class Phase4StimuliSession(BaseSocialSession):
              presentation_box, presentation_angle, reward_available, return_angle,
              start_angle, turn_direction, reward_triggered, outcome,
              valve_time_used, iti):
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":            self.trial_counter,
             "presentation_box":     presentation_box,
             "presentation_angle":   presentation_angle,
@@ -309,4 +320,6 @@ class Phase4StimuliSession(BaseSocialSession):
             "valve_time":           valve_time_used,
             "iti":                  iti,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())

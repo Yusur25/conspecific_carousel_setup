@@ -3,6 +3,9 @@ Basler camera recording script
 - Records to a compressed H264 MP4 file via a real ffmpeg (libx264) pipe, so the
   CRF setting below actually controls quality/size (OpenCV's built-in VideoWriter
   has no way to do this — see H264_CRF for why this matters)
+- Picks a specific camera when several are plugged in (--camera), so two
+  instances in two terminals can record two cameras at once; each camera keeps
+  its own saved crop
 - Optionally crops the sensor ROI before recording (less data in at the source,
   not just a smaller output) via an interactive selector, with the chosen crop
   saved to disk and reused on future runs — see --crop
@@ -19,6 +22,10 @@ Requirements: pip install pypylon opencv-python
               ffmpeg.exe must be installed and on PATH (https://www.gyan.dev/ffmpeg/builds/)
 
 Standalone usage:  python cameracontrol
+See which cameras are attached (JSON, one entry per camera):
+    python cameracontrol --list-cameras
+Record from a particular one (serial number, user-defined name, model, or index):
+    python cameracontrol --camera 40123456
 Launched by another process (e.g. main_socialmemory.py), to share its session
 clock and write into its session folder:
     python cameracontrol --session-start <epoch_seconds> --save-dir <path> --crop reuse
@@ -28,6 +35,7 @@ import argparse
 import csv
 import shutil
 import subprocess
+import sys
 from pypylon import pylon
 import cv2
 import os
@@ -42,7 +50,7 @@ OUTPUT_USER         = "UserOutput3"  # Change if your camera uses "UserOutput" i
 SAVE_DIR            = "recording"    # Folder to save video into
 FRAME_RATE          = 30.0           # Must match your camera's actual frame rate
 PULSE_EVERY_N_FRAMES = 30            # Send a TTL pulse every N frames
-PULSE_WIDTH_S       = 0.001          # Pulse width in seconds (1 ms)
+PULSE_WIDTH_S       = 0.01          # Pulse width in seconds (1 ms)
 H264_CRF            = 23             # H264 quality: lower = better quality, larger file
                                      # 18 = near-lossless, 23 = default, 28 = smaller file
 FFMPEG_PRESET        = "veryfast"    # Encoder speed/efficiency tradeoff. Must comfortably
@@ -54,24 +62,111 @@ PREVIEW_EVERY_N_FRAMES = 3           # Update the preview only every N frames �
                                      # so it doesn't add latency to the recording/pulse loop
 PREVIEW_MAX_WIDTH    = 960           # Downscale the preview/crop-selector window to at
                                      # most this width
-DEFAULT_CROP_CONFIG  = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "camera_crop_config.json")
+CROP_CONFIG_DIR      = os.path.dirname(os.path.abspath(__file__))
+# Crops are saved per camera (camera_crop_config_<serial>.json) — two cameras
+# looking at two different rigs need two different ROIs. This is the single
+# shared file the old one-camera setup wrote; it's used to seed a camera's own
+# file the first time that camera runs, and never written to again.
+LEGACY_CROP_CONFIG   = os.path.join(CROP_CONFIG_DIR, "camera_crop_config.json")
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ── Camera selection ─────────────────────────────────────────────────────────
+# With more than one camera plugged in, CreateFirstDevice() picks whichever the
+# transport layer happens to enumerate first — so two instances started in two
+# terminals would fight over the same camera. Selecting by serial number (or
+# user-defined name) makes each instance deterministic.
+
+def enumerate_cameras():
+    """Describe every attached Basler camera. Opens nothing, so it's safe to
+    call while another process is already recording from one of them."""
+    cameras = []
+    for i, dev in enumerate(pylon.TlFactory.GetInstance().EnumerateDevices()):
+        try:
+            user_id = dev.GetUserDefinedName()
+        except Exception:
+            user_id = ""      # not supported by every transport layer
+        cameras.append({
+            "index": i,
+            "serial": dev.GetSerialNumber(),
+            "model": dev.GetModelName(),
+            "user_id": user_id,
+            "friendly_name": dev.GetFriendlyName(),
+        })
+    return cameras
+
+def describe_cameras(cameras):
+    return "\n".join(
+        f"  [{c['index']}] serial {c['serial']}  {c['model']}"
+        + (f"  (name: {c['user_id']})" if c["user_id"] else "")
+        for c in cameras
+    ) or "  (none)"
+
+def _matches(info, selector):
+    sel = selector.strip().lower()
+    if sel.isdigit() and int(sel) == info["index"]:
+        return True
+    return sel in (info["serial"].lower(), info["user_id"].lower(),
+                   info["model"].lower(), info["friendly_name"].lower())
+
+def open_camera(selector):
+    """Open the requested camera (serial / user-defined name / model / index),
+    or the first one found if `selector` is None. Returns (camera, info)."""
+    factory = pylon.TlFactory.GetInstance()
+    devices = factory.EnumerateDevices()
+    infos = enumerate_cameras()
+    if not devices:
+        raise RuntimeError("No Basler cameras found — check the USB/GigE connection.")
+
+    if selector is None:
+        device, info = devices[0], infos[0]
+        if len(devices) > 1:
+            print(f"{len(devices)} cameras attached, none requested — using the first:\n"
+                  f"{describe_cameras(infos)}")
+    else:
+        matched = [(d, i) for d, i in zip(devices, infos) if _matches(i, selector)]
+        if not matched:
+            raise RuntimeError(
+                f"No camera matching '{selector}'. Attached cameras:\n"
+                f"{describe_cameras(infos)}")
+        if len(matched) > 1:
+            raise RuntimeError(
+                f"'{selector}' matches {len(matched)} cameras — use a serial number "
+                f"instead. Attached cameras:\n{describe_cameras(infos)}")
+        device, info = matched[0]
+
+    camera = pylon.InstantCamera(factory.CreateDevice(device))
+    try:
+        camera.Open()
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not open camera {info['serial']} ({info['model']}): {e}\n"
+            "If another recording is already running, it holds that camera — "
+            "pick the other one with --camera.") from e
+    return camera, info
 
 def setup_user_output(camera):
     camera.LineSelector.Value = OUTPUT_LINE
+    # Line direction is stored per camera, so a second camera can arrive with
+    # this line set to Input — in which case LineSource is read-only and the
+    # write below raises. Switch it to an output first.
+    if camera.LineMode.Value != "Output":
+        camera.LineMode.Value = "Output"
     camera.LineSource.Value = OUTPUT_USER
     camera.UserOutputSelector.Value = OUTPUT_USER
 
 def set_output(camera, state: bool):
     camera.UserOutputValue.Value = state
 
-def show_preview(frame, width, height) -> bool:
-    """Display frame (downscaled to PREVIEW_MAX_WIDTH). Returns True if 'q' was pressed."""
+def show_preview(frame, width, height, window="Camera Preview") -> bool:
+    """Display frame (downscaled to PREVIEW_MAX_WIDTH). Returns True if 'q' was pressed.
+
+    `window` carries the camera's identity so two simultaneous recordings don't
+    share (and overwrite) one preview window.
+    """
     if width > PREVIEW_MAX_WIDTH:
         scale = PREVIEW_MAX_WIDTH / width
         frame = cv2.resize(frame, (PREVIEW_MAX_WIDTH, int(height * scale)))
-    cv2.imshow("Camera Preview", frame)
+    cv2.imshow(window, frame)
     return cv2.waitKey(1) & 0xFF == ord("q")
 
 # ── Sensor cropping ─────────────────────────────────────────────────────────
@@ -197,15 +292,30 @@ def save_crop_config(path, cfg):
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
 
-def decide_crop(camera, converter, args):
-    """Apply --crop policy. Returns the (x, y, w, h) crop actually applied, or
-    None if recording at full sensor resolution."""
+def resolve_crop_config(args, serial):
+    """Where this camera's crop lives. Each camera gets its own file so a second
+    camera's ROI doesn't overwrite the first's; the first time a camera runs,
+    the old shared file (single-camera setups) seeds it."""
+    if args.crop_config:
+        return args.crop_config
+    path = os.path.join(CROP_CONFIG_DIR, f"camera_crop_config_{serial}.json")
+    if not os.path.exists(path) and os.path.exists(LEGACY_CROP_CONFIG):
+        try:
+            shutil.copyfile(LEGACY_CROP_CONFIG, path)
+        except OSError:
+            pass  # non-fatal: falls through to "no saved crop" / full frame
+    return path
+
+def decide_crop(camera, converter, args, crop_config):
+    """Apply --crop policy, loading/saving this camera's crop from `crop_config`.
+    Returns the (x, y, w, h) crop actually applied, or None if recording at full
+    sensor resolution."""
     if args.crop == "none":
         sensor_w, sensor_h = reset_to_full_sensor(camera)
         print(f"Crop disabled — full sensor frame ({sensor_w}x{sensor_h})")
         return None
 
-    saved = load_crop_config(args.crop_config)
+    saved = load_crop_config(crop_config)
     sensor_w, sensor_h = reset_to_full_sensor(camera)
     compatible = (saved is not None
                   and saved.get("sensor_width") == sensor_w
@@ -227,11 +337,11 @@ def decide_crop(camera, converter, args):
 
     if crop is not None:
         x, y, w, h = crop
-        save_crop_config(args.crop_config, {
+        save_crop_config(crop_config, {
             "offset_x": x, "offset_y": y, "width": w, "height": h,
             "sensor_width": sensor_w, "sensor_height": sensor_h,
         })
-        print(f"Crop applied: {w}x{h} at ({x},{y}) — saved to {args.crop_config}")
+        print(f"Crop applied: {w}x{h} at ({x},{y}) — saved to {crop_config}")
     else:
         print(f"Recording at full sensor frame ({sensor_w}x{sensor_h})")
     return crop
@@ -304,17 +414,48 @@ def parse_args():
              "always prompt for a new crop. 'none': always record full sensor frame.",
     )
     parser.add_argument(
-        "--crop-config", type=str, default=DEFAULT_CROP_CONFIG,
-        help=f"Path to save/load crop settings (default: {DEFAULT_CROP_CONFIG}).",
+        "--crop-config", type=str, default=None,
+        help="Path to save/load crop settings. Default: camera_crop_config_"
+             "<serial>.json next to this script, i.e. one saved crop per camera.",
+    )
+    parser.add_argument(
+        "--camera", type=str, default=None,
+        help="Which camera to record from: serial number, user-defined name, "
+             "model name, or index from --list-cameras. Default: the first "
+             "camera found. Give a serial when two cameras are plugged in, so "
+             "two instances in two terminals each get their own.",
+    )
+    parser.add_argument(
+        "--list-cameras", action="store_true",
+        help="Print the attached Basler cameras as JSON and exit (opens nothing, "
+             "so it's safe to run while a recording is in progress).",
     )
     return parser.parse_args()
 
 def main():
     args = parse_args()
+
+    if args.list_cameras:
+        # Machine-readable so the setup GUIs can offer a camera dropdown
+        # without importing pypylon into the Tk process.
+        print(json.dumps(enumerate_cameras()))
+        return 0
+
     session_start = args.session_start if args.session_start is not None else time.time()
     save_dir = args.save_dir
 
     ffmpeg_path = find_ffmpeg()
+
+    try:
+        camera, cam_info = open_camera(args.camera)
+    except RuntimeError as e:
+        print(e)
+        return 1
+    cam_label = (f"{cam_info['model']} ({cam_info['user_id']}, {cam_info['serial']})"
+                 if cam_info["user_id"] else
+                 f"{cam_info['model']} ({cam_info['serial']})")
+    preview_window = f"Camera Preview — {cam_label}"
+    print(f"Camera: {cam_label}")
 
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -322,23 +463,20 @@ def main():
     timestamps_path = os.path.join(save_dir, "frame_timestamps.csv")
     frame_timestamps = []
 
-    camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-    camera.Open()
-    print(f"Camera: {camera.GetDeviceInfo().GetModelName()}")
-
     # Configure UserOutput line
     setup_user_output(camera)
     set_output(camera, False)
 
     converter, is_mono = configure_converter(camera)
-    decide_crop(camera, converter, args)
+    decide_crop(camera, converter, args,
+                resolve_crop_config(args, cam_info["serial"]))
 
     # Grab one frame first to get resolution (post-crop) for the video writer
     first_frame = grab_single_frame(camera, converter)
     height, width = first_frame.shape[:2]
 
     if SHOW_PREVIEW:
-        show_preview(first_frame, width, height)
+        show_preview(first_frame, width, height, preview_window)
 
     ffmpeg_proc, ffmpeg_log, ffmpeg_log_path = start_ffmpeg_writer(
         ffmpeg_path, video_path, width, height, is_mono)
@@ -389,7 +527,7 @@ def main():
                             set_output(camera, False)
 
                         if SHOW_PREVIEW and frame_count % PREVIEW_EVERY_N_FRAMES == 0:
-                            if show_preview(frame, width, height):
+                            if show_preview(frame, width, height, preview_window):
                                 stop_flag.set()
 
             except Exception as e:
@@ -417,5 +555,7 @@ def main():
         print(f"  File:       {video_path} ({size_mb:.1f} MB)")
         print(f"  Timestamps: {timestamps_path}")
 
+    return 0
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

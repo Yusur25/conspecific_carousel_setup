@@ -31,6 +31,8 @@ from hardware import (
     wait_for_table_clear,
     SharedSensorState,
     STOP_EVENT,
+    DOOR_OPEN_TIMEOUT,
+    DOOR_CLOSE_TIMEOUT,
 )
 from .base_session import BaseSocialSession
 
@@ -125,9 +127,13 @@ class Phase4Session(BaseSocialSession):
 
         # ── 2. Open door — async, wait for fully open ─────────────────────────
         threading.Thread(target=open_door, args=(self.ser,), daemon=True).start()
-        wait_for_door_state(self.shared, target_state="door opened", timeout=None)
+        door_opened = wait_for_door_state(self.shared, target_state="door opened",
+                                          timeout=DOOR_OPEN_TIMEOUT, device=self.ser)
         door_open_time = time.time()
-        print("Door opened")
+        if door_opened:
+            print("Door opened")
+        elif self.running and not STOP_EVENT.is_set():
+            print("[ERROR] Door never confirmed open — scoring this trial as door_failed")
 
         # ── 3. Wait for sensory minimum (200 s timeout) ───────────────────────
         print(f"Waiting for sensory minimum ({required_sm:.3f} s)...")
@@ -135,7 +141,7 @@ class Phase4Session(BaseSocialSession):
         first_contact_time = None
 
         deadline = door_open_time + TABLE_SENSOR_TIMEOUT
-        while self.running and not STOP_EVENT.is_set():
+        while door_opened and self.running and not STOP_EVENT.is_set():
             if time.time() >= deadline:
                 print(f"Sensory minimum not met within {TABLE_SENSOR_TIMEOUT} s → missed trial")
                 break
@@ -165,13 +171,15 @@ class Phase4Session(BaseSocialSession):
             threading.Thread(
                 target=close_door_safe, args=(self.ser, self.shared), daemon=True
             ).start()
-            wait_for_door_state(self.shared, "door closed")
+            wait_for_door_state(self.shared, "door closed",
+                                timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
             self._log(trial_start, trial_end, rt, rt_dooropen, rt_tablehold,
                       rt_to_first_table, sampling_time, total_sampling_time,
                       np.nan, required_sm, iti, False, auto_dooropen,
-                      "missed", np.nan)
+                      "missed" if door_opened else "door_failed", np.nan)
             self._run_iti(iti)
-            print("Trial complete (missed)")
+            print("Trial complete (missed)" if door_opened
+                  else "Trial complete (door failed)")
             return
 
         # ── 4. Wait for animal to clear table sensor ──────────────────────────
@@ -212,7 +220,8 @@ class Phase4Session(BaseSocialSession):
         threading.Thread(
             target=close_door_safe, args=(self.ser, self.shared), daemon=True
         ).start()
-        wait_for_door_state(self.shared, "door closed")
+        wait_for_door_state(self.shared, "door closed",
+                            timeout=DOOR_CLOSE_TIMEOUT, device=self.ser)
         print("Door closed, ready for next trial")
 
         self._log(trial_start, trial_end, rt, rt_dooropen, rt_tablehold,
@@ -226,7 +235,7 @@ class Phase4Session(BaseSocialSession):
              rt_to_first_table, sampling_time, total_sampling_time,
              trial_duration, required_sm, iti, reward_triggered, auto_dooropen,
              outcome, valve_time_used):
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":                self.trial_counter,
             "port":                     self.port,
             "trial_start":              trial_start,
@@ -247,4 +256,6 @@ class Phase4Session(BaseSocialSession):
             "valve_time":               valve_time_used,
             "outcome":                  outcome,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())

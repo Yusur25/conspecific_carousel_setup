@@ -74,7 +74,7 @@ class LearningSession(BaseSCSession):
         print(f"Reward at port C (#{self.reward_count}, valve={valve_time_used:.3f} s)")
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":        self.trial_counter,
             "reward_triggered": rewarded,
             "trial_start":      trial_start,
@@ -84,5 +84,7 @@ class LearningSession(BaseSCSession):
             "reward_count":     self.reward_count,
             "valve_time":       valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)

@@ -60,7 +60,7 @@ class Phase1Session(BaseSocialSession):
         set_led(self.ser, self.port, False)
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":        self.trial_counter,
             "port":             self.port,
             "trial_start":      trial_start,
@@ -71,5 +71,7 @@ class Phase1Session(BaseSocialSession):
             "reward_count":     self.reward_count,
             "valve_time":       valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
 
         self._run_iti(iti)

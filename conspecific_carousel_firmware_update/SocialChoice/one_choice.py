@@ -107,7 +107,7 @@ class OneChoiceSession(BaseSCSession):
             print("Miss: port C window expired")
 
         iti = random.uniform(self.ITI_MIN, self.ITI_MAX)
-        self.results_df.loc[len(self.results_df)] = {
+        row = {
             "trial_num":        self.trial_counter,
             "outcome":          outcome,
             "rt_a":             rt_a,
@@ -119,5 +119,7 @@ class OneChoiceSession(BaseSCSession):
             "reward_count":     self.reward_count,
             "valve_time":       valve_time_used,
         }
+        with self._df_lock:
+            self.results_df.loc[len(self.results_df)] = row
         print(self.results_df.iloc[-1].to_dict())
         self._run_iti(iti)

@@ -8,6 +8,9 @@
 import random
 import threading
 import time
+import traceback
+
+import pandas as pd
 
 from hardware import (
     deliver_reward,
@@ -47,6 +50,10 @@ class BaseSocialSession:
         self.thread = None
         # Subclasses define self.results_df in their own __init__
 
+        # Guards reads/writes of results dataframes shared between the
+        # session thread (appends rows) and the main thread (polls for the GUI).
+        self._df_lock = threading.Lock()
+
     # ── Session control ───────────────────────────────────────────────────────
 
     def start(self):
@@ -83,6 +90,14 @@ class BaseSocialSession:
                     shutdown_outputs(self.ser)
                 except TimeoutError:
                     print("[ERROR] Device unresponsive — could not confirm outputs off")
+            except Exception:
+                # Any other exception would otherwise kill this thread while
+                # self.running stayed True, leaving the main GUI loop spinning
+                # against a session that has silently stopped running trials.
+                # End the session loudly instead.
+                print(f"[ERROR] Trial {self.trial_counter} crashed — ending session")
+                traceback.print_exc()
+                break
             if self.max_trials is not None and self.trial_counter >= self.max_trials:
                 print(f"[INFO] Trial limit ({self.max_trials}) reached")
                 break
@@ -92,6 +107,12 @@ class BaseSocialSession:
 
     def _run_trial(self):
         raise NotImplementedError
+
+    def snapshot(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Thread-safe copy of a results dataframe, for reading from the main thread
+        while the session thread may be appending rows to it."""
+        with self._df_lock:
+            return df.copy()
 
     # ── Shared helpers ────────────────────────────────────────────────────────
 
